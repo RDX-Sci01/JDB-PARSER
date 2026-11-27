@@ -13,9 +13,10 @@ body{margin:0;padding:20px;background:var(--bg);color:var(--text);font:13px/1.45
 h1{font-size:19px;margin:0 0 2px}
 .muted{color:var(--muted);font-size:11px}
 button,input,textarea{background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:8px 11px;font:inherit}
-button{cursor:pointer}button:hover{border-color:var(--accent)}button:disabled{opacity:.5;cursor:wait}
+button{cursor:pointer}button:hover:not(:disabled){border-color:var(--accent)}button:disabled{opacity:.5;cursor:default}
 :focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .primary{background:var(--accent-bg);border-color:var(--accent-bg);color:#fff}
+.sm{padding:4px 8px;font-size:11px}
 .panel{margin:16px 0 12px;padding:12px;background:var(--panel);border:1px solid var(--line);border-radius:10px}
 textarea{width:100%;min-height:84px;resize:vertical;margin-bottom:8px;font:12px ui-monospace,Menlo,Consolas,monospace}
 .flex{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
@@ -26,7 +27,8 @@ textarea{width:100%;min-height:84px;resize:vertical;margin-bottom:8px;font:12px 
 .tab.on{background:var(--on);border-color:var(--accent)}
 .tab button{border:0;background:none;padding:7px 4px 7px 10px}.tab .x{padding:7px 10px 7px 4px;color:var(--muted)}
 .tab.bad button:first-child{color:var(--danger)}
-.info{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;color:var(--muted);font-size:11px;margin:8px 2px}
+.info{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;color:var(--muted);font-size:11px;margin:8px 2px}
+.info .flex{gap:6px}
 #view{border:1px solid var(--line);border-radius:10px;background:var(--panel);min-height:160px;overflow:hidden}
 .empty{padding:40px 20px;text-align:center;color:var(--muted)}
 .err{color:var(--danger)}
@@ -35,32 +37,34 @@ table{border-collapse:collapse;width:100%;font-size:12px}
 th,td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:left;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 th{position:sticky;top:0;background:var(--panel);cursor:pointer;user-select:none}
 th:hover{color:var(--accent)}
-tr:hover td{background:var(--hover)}
+tbody tr{cursor:pointer}tbody tr:hover td{background:var(--hover)}
 .n{color:var(--num)}.z{color:var(--muted)}
-.sm{padding:4px 8px;font-size:11px}
 .drop #view{outline:2px dashed var(--accent);outline-offset:-2px}
 #found:not(:empty){margin-top:10px;border-top:1px solid var(--line);padding-top:10px}
 .fhead{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
-.fhead strong{margin-right:auto}
-.flist{max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:7px}
-.fitem{display:flex;gap:8px;align-items:flex-start;padding:5px 9px;border-bottom:1px solid var(--line);font:12px ui-monospace,Menlo,Consolas,monospace;overflow-wrap:anywhere;cursor:pointer}
+.fhead>:first-child{margin-right:auto}
+.flist,.slist{border:1px solid var(--line);border-radius:7px;max-height:220px;overflow:auto}
+.mono{font:12px ui-monospace,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+.fitem{display:flex;gap:8px;align-items:flex-start;padding:5px 9px;border-bottom:1px solid var(--line);cursor:pointer}
 .fitem:last-child{border-bottom:0}.fitem:hover{background:var(--hover)}.fitem input{padding:0;margin-top:3px}
 details.saved{margin-top:10px}
 details.saved summary{cursor:pointer;color:var(--muted);font-size:12px}
 #saved{margin-top:8px}
 .sitem{display:flex;align-items:center;border-bottom:1px solid var(--line)}
 .sitem:last-child{border-bottom:0}
-.sitem .slink{flex:1;min-width:0;text-align:left;border:0;background:none;border-radius:0;font:12px ui-monospace,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+.sitem .slink{flex:1;min-width:0;text-align:left;border:0;background:none;border-radius:0}
 .sitem .slink:hover{background:var(--hover)}
 .sitem .x{border:0;background:none;color:var(--muted);padding:6px 10px}
-.slist{border:1px solid var(--line);border-radius:7px;max-height:200px;overflow:auto}
 .more{display:block;width:100%;border:0;border-top:1px solid var(--line);border-radius:0;color:var(--muted)}
+dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:10px;width:min(720px,92vw);padding:14px}
+dialog::backdrop{background:rgba(0,0,0,.55)}
+#dlgBody{margin:0 0 10px;max-height:60vh;overflow:auto;white-space:pre-wrap}
 </style>
 </head>
 <body>
 <div class="app">
   <h1>JSON Table</h1>
-  <div class="muted">Fetch several JSON links at once and browse them as tables.</div>
+  <div class="muted">Load JSON from links, files, or pasted text and browse it as tables.</div>
 
   <div class="panel">
     <textarea id="urls" placeholder="One link per line" aria-label="JSON links"></textarea>
@@ -70,7 +74,7 @@ details.saved summary{cursor:pointer;color:var(--muted);font-size:12px}
       <button id="reloadBtn">Reload all</button>
       <span class="muted">Links must allow cross-origin requests (CORS).</span>
     </div>
-    <details class="saved" id="localBox">
+    <details class="saved">
       <summary>Open files or paste text</summary>
       <div style="margin-top:8px">
         <textarea id="pasteText" placeholder="Paste JSON, JSON Lines, or any text that contains JSON" aria-label="Paste text"></textarea>
@@ -92,322 +96,45 @@ details.saved summary{cursor:pointer;color:var(--muted);font-size:12px}
 
   <input class="search" id="q" type="search" placeholder="Search rows…" aria-label="Search rows">
   <div class="tabs" id="tabs"></div>
-  <div class="info"><span id="count"></span><span id="state"></span></div>
+  <div class="info">
+    <span id="count"></span>
+    <span class="flex"><span id="state"></span><button class="sm" id="csvBtn">Export CSV</button><button class="sm" id="jsonBtn">Export JSON</button></span>
+  </div>
   <div id="view"></div>
 </div>
+
+<dialog id="dlg" aria-label="Row details">
+  <pre id="dlgBody" class="mono"></pre>
+  <div class="flex"><button class="sm" id="copyBtn">Copy JSON</button><button class="sm" id="closeBtn">Close</button></div>
+</dialog>
 
 <script>
 "use strict";
 const $=id=>document.getElementById(id);
-const KEY="json-table:urls:v1",PAGE=100,TIMEOUT=15000,MAXCOLS=40;
-const st={sources:[],active:"all",q:"",sort:null,limit:PAGE};
-let uid=1,version=0,allCache=null;
+const PAGE=100,TIMEOUT=15000,MAXCOLS=40,MAXSAVED=100,POOL=6,MAXFOUND=500;
+const K={urls:"json-table:urls:v1",saved:"json-table:saved:v1",draft:"json-table:draft:v1"};
+const st={sources:[],active:"all",q:"",sort:null,limit:PAGE,found:[]};
+let uid=1,version=0,allCache=null,saved=[],storageOk=true;
+
 const isC=v=>v!==null&&typeof v==="object";
 const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e;};
 const str=(v,n)=>{const s=isC(v)?JSON.stringify(v):String(v);return s.length>n?s.slice(0,n)+"…":s;};
+const msg=t=>{$("msg").textContent=t;};
+const store=(k,v)=>{try{localStorage.setItem(k,v);}catch{storageOk=false;}};
+const read=k=>{try{return localStorage.getItem(k);}catch{storageOk=false;return null;}};
+const splitLinks=t=>[...new Set(t.split(/[\s,]+/).filter(Boolean))];
+const validUrl=u=>{try{return /^https?:$/.test(new URL(u).protocol);}catch{return false;}};
+const button=(label,cls,data)=>{const b=el("button",cls,label);b.type="button";Object.assign(b.dataset,data||{});return b;};
 
 /* ---------- parsing ---------- */
 function parseText(text){
-  text=text.replace(/^\uFEFF/,"").trim();
   try{return JSON.parse(text);}
-  catch(e){
+  catch{
     const lines=text.split(/\r?\n/).filter(l=>l.trim());
-    if(lines.length>1){try{return lines.map(l=>JSON.parse(l));}catch{}}
+    if(lines.length>1)try{return lines.map(l=>JSON.parse(l));}catch{}
     throw new Error("Not valid JSON");
   }
 }
-function findRows(d){
-  let rows=null;
-  if(Array.isArray(d))rows=d;
-  else if(isC(d)){
-    let best=null;
-    for(const v of Object.values(d))if(Array.isArray(v)&&v.length&&(!best||v.length>best.length))best=v;
-    if(best)rows=best;
-    else{const e=Object.entries(d);if(e.length&&e.every(([,v])=>isC(v)&&!Array.isArray(v)))rows=e.map(([k,v])=>({_key:k,...v}));}
-  }
-  if(!rows||!rows.length)return null;
-  return rows.map(r=>isC(r)&&!Array.isArray(r)?r:{value:r});
-}
-function colsOf(rows){
-  const seen=new Set(),cols=[];
-  for(const r of rows.slice(0,500))for(const k of Object.keys(r))if(!seen.has(k)&&cols.length<MAXCOLS){seen.add(k);cols.push(k);}
-  return cols;
-}
-
-/* ---------- sources ---------- */
-function nameFor(url){
-  const u=new URL(url);
-  let n=decodeURIComponent(u.pathname.split("/").filter(Boolean).pop()||u.hostname).replace(/\.(json|jsonl|ndjson)$/i,"");
-  const base=n;let i=2;
-  while(st.sources.some(s=>s.name===n))n=base+" ("+i++ +")";
-  return n;
-}
-function save(){try{localStorage.setItem(KEY,JSON.stringify(st.sources.filter(s=>s.url).map(s=>s.url)));}catch{}}
-
-async function load(s){
-  s.ctrl?.abort();
-  const ctrl=s.ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort("timeout"),TIMEOUT);
-  s.loading=true;s.error=null;render();
-  try{
-    const res=await fetch(s.url,{signal:ctrl.signal});
-    if(!res.ok)throw new Error("HTTP "+res.status);
-    const rows=findRows(parseText(await res.text()));
-    if(!rows)throw new Error("No list of records found");
-    s.rows=rows;s.cols=colsOf(rows);
-  }catch(e){
-    if(s.ctrl!==ctrl)return;
-    s.rows=[];s.cols=[];
-    s.error=ctrl.signal.reason==="timeout"?"Timed out":e instanceof TypeError?"Network error or blocked by CORS":e.message;
-  }finally{
-    clearTimeout(timer);
-    if(s.ctrl===ctrl){s.loading=false;s.ctrl=null;version++;render();}
-  }
-}
-
-function addUrls(text){
-  const lines=[...new Set(text.split(/[\s,]+/).map(l=>l.trim()).filter(Boolean))];
-  const bad=[],added=[];
-  for(const l of lines){
-    try{
-      const u=new URL(l);if(!/^https?:$/.test(u.protocol))throw 0;
-      if(st.sources.some(s=>s.url===l))continue;
-      added.push({id:String(uid++),url:l,name:nameFor(l),rows:[],cols:[],error:null,loading:false,ctrl:null});
-      st.sources.push(added[added.length-1]);
-    }catch{bad.push(l);}
-  }
-  $("msg").textContent=bad.length?"Skipped invalid links:\n"+bad.join("\n"):"";
-  if(added.length){save();st.active=added.length===1?added[0].id:"all";added.forEach(load);}
-  return added.length;
-}
-
-/* ---------- table ---------- */
-function current(){
-  if(st.active!=="all"){const s=st.sources.find(x=>x.id===st.active);return s?{rows:s.rows,cols:s.cols,source:s}:{rows:[],cols:[]};}
-  if(allCache&&allCache.v===version)return allCache.d;
-  const rows=[];
-  for(const s of st.sources)for(const r of s.rows)rows.push({_source:s.name,...r});
-  const multi=st.sources.filter(s=>s.rows.length).length>1;
-  const cols=colsOf(rows);
-  const d={rows,cols:multi||!cols.includes("_source")?cols:cols.filter(c=>c!=="_source")};
-  allCache={v:version,d};
-  return d;
-}
-function cmp(a,b,dir){
-  if(a==null||b==null)return a==null?(b==null?0:1):-1;
-  const r=typeof a==="number"&&typeof b==="number"?a-b:str(a,1e4).localeCompare(str(b,1e4),undefined,{numeric:true,sensitivity:"base"});
-  return r*dir;
-}
-function visibleRows(cur){
-  let rows=cur.rows;
-  if(st.q){
-    if(!cur.hay||cur.hayN!==rows.length){cur.hay=rows.map(r=>JSON.stringify(r).toLowerCase());cur.hayN=rows.length;}
-    const q=st.q.toLowerCase();
-    rows=rows.filter((r,i)=>cur.hay[i].includes(q));
-  }
-  if(st.sort){const{col,dir}=st.sort;rows=rows.slice().sort((a,b)=>cmp(a[col],b[col],dir));}
-  return rows;
-}
-
-/* ---------- render ---------- */
-function renderTabs(){
-  const box=$("tabs");box.replaceChildren();
-  const mk=(label,id,bad,closable)=>{
-    const tab=el("div","tab"+(st.active===id?" on":"")+(bad?" bad":""));
-    const b=el("button",null,label);b.type="button";b.dataset.tab=id;tab.append(b);
-    if(closable){const x=el("button","x","×");x.type="button";x.dataset.close=id;x.setAttribute("aria-label","Remove "+label);tab.append(x);}
-    box.append(tab);
-  };
-  if(st.sources.length>1)mk("All","all",false,false);
-  for(const s of st.sources)mk(s.name+(s.loading?" …":s.error?" !":""),s.id,!!s.error,true);
-}
-function render(){
-  renderTabs();
-  const box=$("view");box.replaceChildren();
-  $("fetchBtn").disabled=false;
-  if(!st.sources.length){$("count").textContent="";$("state").textContent="";box.append(el("div","empty","Add one or more JSON links above."));return;}
-  if(st.active==="all"&&st.sources.length===1)st.active=st.sources[0].id;
-
-  const loading=st.sources.filter(s=>s.loading).length,failed=st.sources.filter(s=>s.error).length;
-  $("state").textContent=st.sources.length+(st.sources.length===1?" source":" sources")+(loading?" · loading "+loading:"")+(failed?" · "+failed+" failed":"");
-
-  const cur=current();
-  const src=cur.source;
-  if(src&&src.loading){$("count").textContent="";box.append(el("div","empty","Loading…"));return;}
-  if(src&&src.error){
-    $("count").textContent="";
-    const e=el("div","empty");e.append(el("div","err",src.error),el("div","muted",src.url));
-    box.append(e);return;
-  }
-  const rows=visibleRows(cur);
-  $("count").textContent=rows.length+(rows.length===cur.rows.length?"":" of "+cur.rows.length)+(rows.length===1?" row":" rows");
-  if(!rows.length){box.append(el("div","empty",cur.rows.length?"No rows match your search.":"No rows to show."));return;}
-
-  const wrap=el("div","tw"),tb=el("table"),hr=el("tr");
-  for(const c of cur.cols){
-    const th=el("th",null,c+(st.sort&&st.sort.col===c?(st.sort.dir>0?" ▲":" ▼"):""));
-    th.dataset.col=c;th.tabIndex=0;th.setAttribute("role","button");hr.append(th);
-  }
-  const thead=el("thead");thead.append(hr);tb.append(thead);
-  const body=el("tbody");
-  for(const r of rows.slice(0,st.limit)){
-    const tr=el("tr");
-    for(const c of cur.cols){
-      const v=r[c];
-      const td=el("td",v==null?"z":typeof v==="number"?"n":"",v===undefined?"":v===null?"null":str(v,120));
-      td.title=v===undefined?"":str(v,500);tr.append(td);
-    }
-    body.append(tr);
-  }
-  tb.append(body);wrap.append(tb);box.append(wrap);
-  if(rows.length>st.limit){
-    const b=el("button","more","Show "+Math.min(PAGE,rows.length-st.limit)+" more ("+(rows.length-st.limit)+" hidden)");
-    b.dataset.more="1";box.append(b);
-  }
-}
-
-/* ---------- events ---------- */
-$("fetchBtn").onclick=()=>{
-  const text=$("urls").value;
-  remember(text);
-  if(addUrls(text)){$("urls").value="";store(DRAFT_KEY,"");}
-  render();
-};
-$("urls").addEventListener("keydown",e=>{if(e.key==="Enter"&&(e.ctrlKey||e.metaKey))$("fetchBtn").click();});
-$("reloadBtn").onclick=()=>st.sources.filter(s=>s.url).forEach(load);
-
-let qT;
-$("q").oninput=e=>{clearTimeout(qT);qT=setTimeout(()=>{st.q=e.target.value.trim();st.limit=PAGE;render();},150);};
-
-$("tabs").onclick=e=>{
-  const c=e.target.closest("[data-close]"),t=e.target.closest("[data-tab]");
-  if(c){
-    const s=st.sources.find(x=>x.id===c.dataset.close);s?.ctrl?.abort();
-    st.sources=st.sources.filter(x=>x.id!==c.dataset.close);version++;save();
-    if(st.active===c.dataset.close||!st.sources.length)st.active="all";
-    st.sort=null;render();
-  }else if(t){st.active=t.dataset.tab;st.sort=null;st.limit=PAGE;render();}
-};
-
-$("view").addEventListener("click",e=>{
-  if(e.target.closest("[data-more]")){st.limit+=PAGE;return render();}
-  const th=e.target.closest("th[data-col]");
-  if(th){
-    const c=th.dataset.col;
-    st.sort=st.sort&&st.sort.col===c?(st.sort.dir===1?{col:c,dir:-1}:null):{col:c,dir:1};
-    render();
-  }
-});
-$("view").addEventListener("keydown",e=>{if((e.key==="Enter"||e.key===" ")&&e.target.matches("th[data-col]")){e.preventDefault();e.target.click();}});
-
-/* ---------- index scanning ---------- */
-const END="[\\s\"'<>\\\\)\\]},]";
-const ABS_RE=new RegExp("https?:\\/\\/[^\\s\"'<>\\\\)\\]},]+?\\.(?:json|jsonl|ndjson)(?:\\?[^\\s\"'<>\\\\)\\]},]*)?(?="+END+"|$)","gi");
-const REL_RE=/\.(?:json|jsonl|ndjson)(?:\?\S*)?$/i;
-const ATTR_RE=/(?:href|src)=["']([^"']+\.(?:json|jsonl|ndjson)(?:\?[^"']*)?)["']/gi;
-const MAXFOUND=500;
-st.found=[];
-
-async function fetchText(url){
-  const ctrl=new AbortController(),t=setTimeout(()=>ctrl.abort(),TIMEOUT);
-  try{
-    const r=await fetch(url,{signal:ctrl.signal});
-    if(!r.ok)throw new Error("HTTP "+r.status);
-    return await r.text();
-  }catch(e){
-    throw ctrl.signal.aborted?new Error("Timed out"):e instanceof TypeError?new Error("Network error or blocked by CORS"):e;
-  }finally{clearTimeout(t);}
-}
-
-// Finds .json links in any text: JSON values, HTML attributes, Markdown or plain text.
-function extractLinks(text,base){
-  const out=new Set();
-  const add=s=>{try{const u=new URL(s,base);if(/^https?:$/.test(u.protocol))out.add(u.href);}catch{}};
-  (text.match(ABS_RE)||[]).forEach(add);
-  let data;
-  try{data=JSON.parse(text.replace(/^\uFEFF/,""));}catch{}
-  if(data!==undefined){
-    (function walk(v){
-      if(typeof v==="string"){if(REL_RE.test(v)&&!/\s/.test(v))add(v);}
-      else if(isC(v))for(const k in v)walk(v[k]);
-    })(data);
-  }else for(const m of text.matchAll(ATTR_RE))add(m[1]);
-  try{out.delete(new URL(base).href);}catch{}
-  return [...out].slice(0,MAXFOUND);
-}
-
-async function scan(){
-  const idx=[...new Set($("urls").value.split(/[\s,]+/).filter(Boolean))];
-  if(!idx.length){$("msg").textContent="Enter the link of a file to scan.";return;}
-  remember(idx.join("\n"));
-  $("msg").textContent="";$("scanBtn").disabled=true;$("scanBtn").textContent="Scanning…";
-  const errs=[],found=new Map(),empty=[];
-  await Promise.all(idx.map(async u=>{
-    try{
-      new URL(u);
-      const links=extractLinks(await fetchText(u),u);
-      if(!links.length)empty.push(u);
-      links.forEach(l=>{if(!found.has(l))found.set(l,u);});
-    }catch(e){errs.push(u+": "+(e instanceof TypeError?"Not a valid link":e.message));}
-  }));
-  st.found=[...found.keys()].map(url=>{
-    const added=st.sources.some(s=>s.url===url);
-    return{url,added,checked:!added};
-  });
-  const msgs=[];
-  if(errs.length)msgs.push("Couldn’t scan:\n"+errs.join("\n"));
-  if(empty.length)msgs.push("No .json links found in:\n"+empty.join("\n"));
-  $("msg").textContent=msgs.join("\n\n");
-  $("scanBtn").disabled=false;$("scanBtn").textContent="Find .json links in file";
-  renderFound();
-}
-
-function renderFound(){
-  const box=$("found");box.replaceChildren();
-  const list=st.found;
-  if(!list.length)return;
-  const head=el("div","fhead");
-  head.append(el("strong",null,list.length+" .json link"+(list.length===1?"":"s")+" found"));
-  for(const [a,l] of [["all","Select all"],["none","None"]]){const b=el("button","sm",l);b.type="button";b.dataset.fa=a;head.append(b);}
-  const go=el("button","primary sm");go.type="button";go.dataset.fa="load";head.append(go);
-  const no=el("button","sm","Dismiss");no.type="button";no.dataset.fa="dismiss";head.append(no);
-  const ul=el("div","flist");
-  list.forEach((f,i)=>{
-    const lb=el("label","fitem"),c=el("input");
-    c.type="checkbox";c.checked=f.checked;c.disabled=f.added;c.dataset.fi=i;
-    lb.append(c,el("span",null,f.url+(f.added?" (already added)":"")));
-    ul.append(lb);
-  });
-  box.append(head,ul);
-  updateGo();
-}
-function updateGo(){
-  const go=document.querySelector("[data-fa=load]");if(!go)return;
-  const n=st.found.filter(f=>f.checked).length;
-  go.textContent="Load selected ("+n+")";go.disabled=!n;
-}
-
-$("scanBtn").onclick=scan;
-$("found").addEventListener("click",e=>{
-  const b=e.target.closest("[data-fa]");if(!b)return;
-  const a=b.dataset.fa;
-  if(a==="all")st.found.forEach(f=>{f.checked=!f.added;});
-  if(a==="none")st.found.forEach(f=>{f.checked=false;});
-  if(a==="dismiss")st.found=[];
-  if(a==="load"){
-    const urls=st.found.filter(f=>f.checked).map(f=>f.url);
-    st.found=[];$("urls").value="";
-    addUrls(urls.join("\n"));render();
-  }
-  renderFound();
-});
-$("found").addEventListener("change",e=>{
-  const c=e.target.closest("[data-fi]");
-  if(c){st.found[+c.dataset.fi].checked=c.checked;updateGo();}
-});
-
-/* ---------- local files and pasted text (read like plain text) ---------- */
-function uniqueName(base){let n=base,i=2;while(st.sources.some(s=>s.name===n))n=base+" ("+i++ +")";return n;}
-
 // Index of the bracket that closes the one at position i, or -1.
 function balanced(s,i){
   let depth=0,inStr=false,esc=false;
@@ -427,51 +154,290 @@ function parseLoose(text){
   try{return parseText(text);}catch{}
   for(let i=text.search(/[\[{]/),tries=0;i>=0&&tries<20;tries++){
     const end=balanced(text,i);
-    if(end>i){try{const v=JSON.parse(text.slice(i,end+1));if(findRows(v))return v;}catch{}}
+    if(end>i)try{const v=JSON.parse(text.slice(i,end+1));if(findRows(v))return v;}catch{}
     const next=text.slice(i+1).search(/[\[{]/);
     i=next<0?-1:i+1+next;
   }
   throw new Error("No valid JSON found in this text");
 }
+const direct=o=>{let b=null;for(const v of Object.values(o))if(Array.isArray(v)&&v.length&&(!b||v.length>b.length))b=v;return b;};
+function deep(o,d){
+  if(d>3)return null;
+  let b=null;
+  for(const v of Object.values(o))if(isC(v)&&!Array.isArray(v)){
+    const a=direct(v)||deep(v,d+1);
+    if(a&&(!b||a.length>b.length))b=a;
+  }
+  return b;
+}
+// Finds the list of records: the data itself, its largest array, a keyed map of records, or an array nested a few levels down.
+function findRows(d){
+  let rows=null;
+  if(Array.isArray(d))rows=d;
+  else if(isC(d)){
+    rows=direct(d);
+    if(!rows){
+      const e=Object.entries(d);
+      const keyed=e.length&&e.every(([,v])=>isC(v)&&!Array.isArray(v))?e.map(([k,v])=>({_key:k,...v})):null;
+      rows=keyed&&e.length>1?keyed:deep(d,0)||keyed;
+    }
+  }
+  if(!rows||!rows.length)return null;
+  return rows.map(r=>isC(r)&&!Array.isArray(r)?r:{value:r});
+}
+function colsOf(rows){
+  const seen=new Set(),cols=[];
+  for(const r of rows.slice(0,500))for(const k of Object.keys(r))if(!seen.has(k)&&cols.length<MAXCOLS){seen.add(k);cols.push(k);}
+  return cols;
+}
+
+/* ---------- sources ---------- */
+function uniqueName(base){let n=base||"pasted",i=2;while(st.sources.some(s=>s.name===n))n=base+" ("+i++ +")";return n;}
+function nameFor(url){
+  const u=new URL(url);
+  let n=u.pathname.split("/").filter(Boolean).pop()||u.hostname;
+  try{n=decodeURIComponent(n);}catch{}
+  return uniqueName(n.replace(/\.(json|jsonl|ndjson)$/i,""));
+}
+function newSource(name,url,rows){
+  const s={id:String(uid++),url,name,rows:rows||[],cols:rows?colsOf(rows):[],error:null,loading:!!url,ctrl:null,hay:null};
+  st.sources.push(s);version++;
+  return s;
+}
+const persist=()=>store(K.urls,JSON.stringify(st.sources.filter(s=>s.url).map(s=>s.url)));
+
+function failMsg(e,ctrl,url){
+  if(ctrl.signal.reason==="timeout")return"Timed out";
+  if(e instanceof TypeError)return location.protocol==="https:"&&/^http:/i.test(url)
+    ?"Blocked: an http link can’t be loaded from an https page"
+    :"Request failed (CORS, offline, or blocked). Download the file and use Open files… instead.";
+  return e.message;
+}
+async function fetchText(url,ctrl){
+  const t=setTimeout(()=>ctrl.abort("timeout"),TIMEOUT);
+  try{
+    const r=await fetch(url,{signal:ctrl.signal});
+    if(!r.ok)throw new Error("HTTP "+r.status);
+    return await r.text();
+  }catch(e){throw new Error(failMsg(e,ctrl,url));}
+  finally{clearTimeout(t);}
+}
+async function load(s){
+  s.ctrl?.abort();
+  const ctrl=s.ctrl=new AbortController();
+  s.loading=true;s.error=null;render();
+  try{
+    const rows=findRows(parseLoose(await fetchText(s.url,ctrl)));
+    if(!rows)throw new Error("No list of records found");
+    s.rows=rows;s.cols=colsOf(rows);s.hay=null;
+  }catch(e){
+    if(s.ctrl!==ctrl)return; // superseded by a newer load
+    s.rows=[];s.cols=[];s.hay=null;s.error=e.message;
+  }finally{
+    if(s.ctrl===ctrl){s.loading=false;s.ctrl=null;version++;render();}
+  }
+}
+// Runs loads a few at a time so many links don’t all fire at once.
+async function pool(list){
+  const q=[...list];
+  await Promise.all(Array.from({length:Math.min(POOL,q.length)},async()=>{for(let s;(s=q.shift());)await load(s);}));
+}
+function addUrls(text){
+  const bad=[],added=[];
+  for(const l of splitLinks(text)){
+    if(!validUrl(l)){bad.push(l);continue;}
+    if(st.sources.some(s=>s.url===l))continue;
+    added.push(newSource(nameFor(l),l));
+  }
+  msg(bad.length?"Skipped invalid links:\n"+bad.join("\n"):"");
+  if(added.length){persist();st.active=added.length===1?added[0].id:"all";render();pool(added);}
+  return added.length;
+}
 function addLocal(name,text){
   const rows=findRows(parseLoose(text));
   if(!rows)throw new Error("No list of records found");
-  const s={id:String(uid++),url:null,name:uniqueName(name.replace(/\.(json|jsonl|ndjson|txt)$/i,"")||"pasted"),rows,cols:colsOf(rows),error:null,loading:false,ctrl:null};
-  st.sources.push(s);st.active=s.id;version++;
-  return s;
+  const s=newSource(uniqueName(name.replace(/\.(json|jsonl|ndjson|txt)$/i,"")||"pasted"),null,rows);
+  st.active=s.id;
 }
 async function openFiles(files){
   const errs=[];
-  for(const f of files){try{addLocal(f.name,await f.text());}catch(e){errs.push(f.name+": "+e.message);}}
-  $("msg").textContent=errs.join("\n");
-  st.sort=null;st.limit=PAGE;render();
+  for(const f of files)try{addLocal(f.name,await f.text());}catch(e){errs.push(f.name+": "+e.message);}
+  msg(errs.join("\n"));st.sort=null;st.limit=PAGE;render();
 }
-$("fileBtn").onclick=()=>$("fileIn").click();
-$("fileIn").onchange=e=>{openFiles([...e.target.files]);e.target.value="";};
-$("parseBtn").onclick=()=>{
-  try{addLocal("pasted",$("pasteText").value);$("pasteText").value="";$("msg").textContent="";render();}
-  catch(e){$("msg").textContent=e.message;}
-};
-let dragN=0;
-addEventListener("dragenter",e=>{e.preventDefault();dragN++;document.body.classList.add("drop");});
-addEventListener("dragleave",()=>{if(--dragN<=0){dragN=0;document.body.classList.remove("drop");}});
-addEventListener("dragover",e=>e.preventDefault());
-addEventListener("drop",e=>{e.preventDefault();dragN=0;document.body.classList.remove("drop");if(e.dataTransfer?.files.length)openFiles([...e.dataTransfer.files]);});
+
+/* ---------- table data ---------- */
+function current(){
+  if(st.active!=="all"){const s=st.sources.find(x=>x.id===st.active);return s?{rows:s.rows,cols:s.cols,source:s}:{rows:[],cols:[]};}
+  if(allCache&&allCache.v===version)return allCache.d;
+  const rows=[];
+  for(const s of st.sources)for(const r of s.rows)rows.push({_source:s.name,...r});
+  const cols=colsOf(rows);
+  const d={rows,cols:st.sources.filter(s=>s.rows.length).length>1?cols:cols.filter(c=>c!=="_source")};
+  allCache={v:version,d};
+  return d;
+}
+function cmp(a,b,dir){
+  if(a==null||b==null)return a==null?(b==null?0:1):-1; // empty values always sort last
+  const r=typeof a==="number"&&typeof b==="number"?a-b:str(a,1e4).localeCompare(str(b,1e4),undefined,{numeric:true,sensitivity:"base"});
+  return r*dir;
+}
+function visibleRows(cur){
+  let rows=cur.rows;
+  if(st.q){
+    const h=cur.source||cur; // cache the search index on the source so it survives re-renders
+    if(!h.hay||h.hay.length!==h.rows.length)h.hay=h.rows.map(r=>Object.values(r).map(v=>isC(v)?JSON.stringify(v):String(v)).join("\u0001").toLowerCase());
+    const q=st.q.toLowerCase();
+    rows=rows.filter((r,i)=>h.hay[i].includes(q)); // values only, so “name” doesn’t match every key
+  }
+  if(st.sort){const{col,dir}=st.sort;rows=rows.slice().sort((a,b)=>cmp(a[col],b[col],dir));}
+  return rows;
+}
+
+/* ---------- render ---------- */
+function renderTabs(){
+  const box=$("tabs");box.replaceChildren();
+  const mk=(label,id,bad,closable)=>{
+    const tab=el("div","tab"+(st.active===id?" on":"")+(bad?" bad":""));
+    tab.append(button(label,"",{tab:id}));
+    if(closable){const x=button("×","x",{close:id});x.setAttribute("aria-label","Remove "+label);tab.append(x);}
+    box.append(tab);
+  };
+  if(st.sources.length>1)mk("All","all",false,false);
+  for(const s of st.sources)mk(s.name+(s.loading?" …":s.error?" !":""),s.id,!!s.error,true);
+}
+function render(){
+  renderTabs();
+  const box=$("view");box.replaceChildren();
+  const empty=!st.sources.length;
+  $("csvBtn").disabled=$("jsonBtn").disabled=true;
+  if(empty){$("count").textContent=$("state").textContent="";box.append(el("div","empty","Add one or more JSON links above, or open a file."));return;}
+  if(st.active==="all"&&st.sources.length===1)st.active=st.sources[0].id;
+
+  const loading=st.sources.filter(s=>s.loading).length,failed=st.sources.filter(s=>s.error).length;
+  $("state").textContent=st.sources.length+(st.sources.length===1?" source":" sources")+(loading?" · loading "+loading:"")+(failed?" · "+failed+" failed":"");
+
+  const cur=current(),src=cur.source;
+  if(src&&src.loading){$("count").textContent="";box.append(el("div","empty","Loading…"));return;}
+  if(src&&src.error){
+    $("count").textContent="";
+    const e=el("div","empty");e.append(el("div","err",src.error),el("div","muted",src.url));
+    box.append(e);return;
+  }
+  const rows=visibleRows(cur);
+  $("count").textContent=rows.length+(rows.length===cur.rows.length?"":" of "+cur.rows.length)+(rows.length===1?" row":" rows");
+  if(!rows.length){box.append(el("div","empty",cur.rows.length?"No rows match your search.":"No rows to show."));return;}
+  $("csvBtn").disabled=$("jsonBtn").disabled=false;
+
+  const hr=el("tr");
+  for(const c of cur.cols){
+    const th=el("th",null,c+(st.sort&&st.sort.col===c?(st.sort.dir>0?" ▲":" ▼"):""));
+    th.dataset.col=c;th.tabIndex=0;th.setAttribute("role","button");hr.append(th);
+  }
+  const thead=el("thead");thead.append(hr);
+  const body=el("tbody");
+  for(const r of rows.slice(0,st.limit)){
+    const tr=el("tr");tr._row=r;
+    for(const c of cur.cols){
+      const v=r[c];
+      const td=el("td",v==null?"z":typeof v==="number"?"n":"",v===undefined?"":v===null?"null":str(v,120));
+      td.title=v===undefined?"":str(v,500);tr.append(td);
+    }
+    body.append(tr);
+  }
+  const tb=el("table");tb.append(thead,body);
+  const wrap=el("div","tw");wrap.append(tb);box.append(wrap);
+  if(rows.length>st.limit){
+    const b=el("button","more","Show "+Math.min(PAGE,rows.length-st.limit)+" more ("+(rows.length-st.limit)+" hidden)");
+    b.dataset.more="1";box.append(b);
+  }
+}
+
+/* ---------- export ---------- */
+function download(name,text,type){
+  const a=el("a");a.href=URL.createObjectURL(new Blob([text],{type}));a.download=name;a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+function exportRows(kind){
+  const cur=current(),rows=visibleRows(cur),name=(cur.source?.name||"all").replace(/[^\w.-]+/g,"_");
+  if(!rows.length)return;
+  if(kind==="json")return download(name+".json",JSON.stringify(rows,null,2),"application/json");
+  const q=v=>{const s=v==null?"":isC(v)?JSON.stringify(v):String(v);return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};
+  const csv=[cur.cols.map(q).join(","),...rows.map(r=>cur.cols.map(c=>q(r[c])).join(","))].join("\r\n");
+  download(name+".csv","\uFEFF"+csv,"text/csv");
+}
+
+/* ---------- index scanning ---------- */
+const END="[\\s\"'<>\\\\)\\]},]";
+const ABS_RE=new RegExp("https?:\\/\\/[^\\s\"'<>\\\\)\\]},]+?\\.(?:json|jsonl|ndjson)(?:\\?[^\\s\"'<>\\\\)\\]},]*)?(?="+END+"|$)","gi");
+const REL_RE=/\.(?:json|jsonl|ndjson)(?:\?\S*)?$/i;
+const ATTR_RE=/(?:href|src)=["']([^"']+\.(?:json|jsonl|ndjson)(?:\?[^"']*)?)["']/gi;
+
+// Finds .json links in any text: JSON values, HTML attributes, Markdown or plain text.
+function extractLinks(text,base){
+  const out=new Set();
+  const add=s=>{try{const u=new URL(s,base);if(/^https?:$/.test(u.protocol))out.add(u.href);}catch{}};
+  (text.match(ABS_RE)||[]).forEach(add);
+  let data;
+  try{data=JSON.parse(text.replace(/^\uFEFF/,""));}catch{}
+  if(data!==undefined){
+    (function walk(v){
+      if(typeof v==="string"){if(REL_RE.test(v)&&!/\s/.test(v))add(v);}
+      else if(isC(v))for(const k in v)walk(v[k]);
+    })(data);
+  }else for(const m of text.matchAll(ATTR_RE))add(m[1]);
+  try{out.delete(new URL(base).href);}catch{}
+  return [...out].slice(0,MAXFOUND);
+}
+async function scan(){
+  const idx=splitLinks($("urls").value);
+  if(!idx.length)return msg("Enter the link of a file to scan.");
+  remember(idx.join("\n"));msg("");
+  const btn=$("scanBtn");btn.disabled=true;btn.textContent="Scanning…";
+  const errs=[],empty=[],found=new Set();
+  await Promise.all(idx.map(async u=>{
+    try{
+      if(!validUrl(u))throw new Error("Not a valid link");
+      const links=extractLinks(await fetchText(u,new AbortController()),u);
+      if(!links.length)empty.push(u);
+      links.forEach(l=>found.add(l));
+    }catch(e){errs.push(u+": "+e.message);}
+  }));
+  st.found=[...found].map(url=>{const added=st.sources.some(s=>s.url===url);return{url,added,checked:!added};});
+  const m=[];
+  if(errs.length)m.push("Couldn’t scan:\n"+errs.join("\n"));
+  if(empty.length)m.push("No .json links found in:\n"+empty.join("\n"));
+  msg(m.join("\n\n"));
+  btn.disabled=false;btn.textContent="Find .json links in file";
+  renderFound();
+}
+function renderFound(){
+  const box=$("found");box.replaceChildren();
+  if(!st.found.length)return;
+  const head=el("div","fhead");
+  head.append(el("strong",null,st.found.length+" .json link"+(st.found.length===1?"":"s")+" found"));
+  head.append(button("Select all","sm",{fa:"all"}),button("None","sm",{fa:"none"}),button("","primary sm",{fa:"load"}),button("Dismiss","sm",{fa:"dismiss"}));
+  const ul=el("div","flist");
+  st.found.forEach((f,i)=>{
+    const lb=el("label","fitem mono"),c=el("input");
+    c.type="checkbox";c.checked=f.checked;c.disabled=f.added;c.dataset.fi=i;
+    lb.append(c,el("span",null,f.url+(f.added?" (already added)":"")));
+    ul.append(lb);
+  });
+  box.append(head,ul);
+  updateGo();
+}
+function updateGo(){
+  const go=document.querySelector("[data-fa=load]");if(!go)return;
+  const n=st.found.filter(f=>f.checked).length;
+  go.textContent="Load selected ("+n+")";go.disabled=!n;
+}
 
 /* ---------- saved links (stored in this browser only) ---------- */
-const SAVED_KEY="json-table:saved:v1",DRAFT_KEY="json-table:draft:v1",MAXSAVED=100;
-let saved=[],storageOk=true;
-function store(k,v){try{localStorage.setItem(k,v);}catch{storageOk=false;}}
-function readStore(k){try{return localStorage.getItem(k);}catch{storageOk=false;return null;}}
-
 function remember(text){
-  const urls=[...new Set(text.split(/[\s,]+/).filter(Boolean))].filter(u=>{
-    try{return /^https?:$/.test(new URL(u).protocol);}catch{return false;}
-  });
+  const urls=splitLinks(text).filter(validUrl);
   if(!urls.length)return;
   saved=[...urls,...saved.filter(u=>!urls.includes(u))].slice(0,MAXSAVED);
-  store(SAVED_KEY,JSON.stringify(saved));
-  renderSaved();
+  store(K.saved,JSON.stringify(saved));renderSaved();
 }
 function renderSaved(){
   $("savedCount").textContent=saved.length;
@@ -479,46 +445,120 @@ function renderSaved(){
   if(!saved.length)box.append(el("div","muted","Links you fetch or scan are saved here, in this browser only."));
   else{
     const bar=el("div","fhead");
-    bar.append(el("span","muted","Select a link to add it to the box."));
-    bar.firstChild.style.marginRight="auto";
-    const all=el("button","sm","Fetch all saved");all.type="button";all.dataset.sa="loadall";
-    const clr=el("button","sm","Clear all");clr.type="button";clr.dataset.sa="clear";
-    bar.append(all,clr);
+    bar.append(el("span","muted","Select a link to add it to the box."),button("Fetch all saved","sm",{sa:"loadall"}),button("Clear all","sm",{sa:"clear"}));
     const list=el("div","slist");
     saved.forEach((u,i)=>{
-      const row=el("div","sitem");
-      const b=el("button","slink",u);b.type="button";b.dataset.use=i;
-      const x=el("button","x","×");x.type="button";x.dataset.del=i;x.setAttribute("aria-label","Remove saved link");
-      row.append(b,x);list.append(row);
+      const row=el("div","sitem"),x=button("×","x",{del:i});
+      x.setAttribute("aria-label","Remove saved link");
+      row.append(button(u,"slink mono",{use:i}),x);list.append(row);
     });
     box.append(bar,list);
   }
   if(!storageOk)box.append(el("div","err","This browser is blocking storage, so links won’t be kept after you close the page."));
 }
+
+/* ---------- events ---------- */
+$("fetchBtn").onclick=()=>{
+  const t=$("urls").value;remember(t);
+  if(addUrls(t)){$("urls").value="";store(K.draft,"");}
+  render();
+};
+$("urls").addEventListener("keydown",e=>{if(e.key==="Enter"&&(e.ctrlKey||e.metaKey))$("fetchBtn").click();});
+$("urls").addEventListener("input",()=>store(K.draft,$("urls").value));
+$("reloadBtn").onclick=()=>pool(st.sources.filter(s=>s.url));
+$("scanBtn").onclick=scan;
+$("csvBtn").onclick=()=>exportRows("csv");
+$("jsonBtn").onclick=()=>exportRows("json");
+
+let qT;
+$("q").oninput=e=>{clearTimeout(qT);qT=setTimeout(()=>{st.q=e.target.value.trim();st.limit=PAGE;render();},150);};
+
+$("tabs").onclick=e=>{
+  const c=e.target.closest("[data-close]"),t=e.target.closest("[data-tab]");
+  if(c){
+    st.sources.find(x=>x.id===c.dataset.close)?.ctrl?.abort();
+    st.sources=st.sources.filter(x=>x.id!==c.dataset.close);version++;persist();
+    if(st.active===c.dataset.close||!st.sources.length)st.active="all";
+    st.sort=null;render();
+  }else if(t){st.active=t.dataset.tab;st.sort=null;st.limit=PAGE;render();}
+};
+$("view").addEventListener("click",e=>{
+  if(e.target.closest("[data-more]")){st.limit+=PAGE;return render();}
+  const th=e.target.closest("th[data-col]");
+  if(th){
+    const c=th.dataset.col;
+    st.sort=st.sort&&st.sort.col===c?(st.sort.dir===1?{col:c,dir:-1}:null):{col:c,dir:1};
+    return render();
+  }
+  const tr=e.target.closest("tbody tr");
+  if(tr&&tr._row){$("dlgBody").textContent=JSON.stringify(tr._row,null,2);$("dlg").showModal();}
+});
+$("view").addEventListener("keydown",e=>{if((e.key==="Enter"||e.key===" ")&&e.target.matches("th[data-col]")){e.preventDefault();e.target.click();}});
+
+$("closeBtn").onclick=()=>$("dlg").close();
+$("dlg").addEventListener("click",e=>{if(e.target===$("dlg"))$("dlg").close();});
+$("copyBtn").onclick=async()=>{
+  try{await navigator.clipboard.writeText($("dlgBody").textContent);$("copyBtn").textContent="Copied";}
+  catch{$("copyBtn").textContent="Copy failed";}
+  setTimeout(()=>{$("copyBtn").textContent="Copy JSON";},1200);
+};
+
+$("found").addEventListener("click",e=>{
+  const b=e.target.closest("[data-fa]");if(!b)return;
+  const a=b.dataset.fa;
+  if(a==="all")st.found.forEach(f=>{f.checked=!f.added;});
+  if(a==="none")st.found.forEach(f=>{f.checked=false;});
+  if(a==="dismiss")st.found=[];
+  if(a==="load"){
+    const urls=st.found.filter(f=>f.checked).map(f=>f.url);
+    st.found=[];$("urls").value="";store(K.draft,"");
+    addUrls(urls.join("\n"));render();
+  }
+  renderFound();
+});
+$("found").addEventListener("change",e=>{
+  const c=e.target.closest("[data-fi]");
+  if(c){st.found[+c.dataset.fi].checked=c.checked;updateGo();}
+});
+
 $("saved").addEventListener("click",e=>{
   const use=e.target.closest("[data-use]"),del=e.target.closest("[data-del]"),act=e.target.closest("[data-sa]")?.dataset.sa;
   if(use){
     const url=saved[+use.dataset.use],ta=$("urls");
-    if(!ta.value.split(/[\s,]+/).includes(url)){ta.value=(ta.value.trim()?ta.value.trim()+"\n":"")+url;store(DRAFT_KEY,ta.value);}
+    if(!splitLinks(ta.value).includes(url)){ta.value=(ta.value.trim()?ta.value.trim()+"\n":"")+url;store(K.draft,ta.value);}
     ta.focus();
   }else if(del){
-    saved.splice(+del.dataset.del,1);store(SAVED_KEY,JSON.stringify(saved));renderSaved();
+    saved.splice(+del.dataset.del,1);store(K.saved,JSON.stringify(saved));renderSaved();
   }else if(act==="clear"){
-    if(confirm("Remove all saved links?")){saved=[];store(SAVED_KEY,"[]");renderSaved();}
+    if(confirm("Remove all saved links?")){saved=[];store(K.saved,"[]");renderSaved();}
   }else if(act==="loadall"){
     addUrls(saved.join("\n"));render();
   }
 });
-$("urls").addEventListener("input",()=>store(DRAFT_KEY,$("urls").value));
+
+$("fileBtn").onclick=()=>$("fileIn").click();
+$("fileIn").onchange=e=>{openFiles([...e.target.files]);e.target.value="";};
+$("parseBtn").onclick=()=>{
+  try{addLocal("pasted",$("pasteText").value);$("pasteText").value="";msg("");render();}
+  catch(e){msg(e.message);}
+};
+let dragN=0;
+addEventListener("dragenter",e=>{e.preventDefault();dragN++;document.body.classList.add("drop");});
+addEventListener("dragleave",()=>{if(--dragN<=0){dragN=0;document.body.classList.remove("drop");}});
+addEventListener("dragover",e=>e.preventDefault());
+addEventListener("drop",e=>{
+  e.preventDefault();dragN=0;document.body.classList.remove("drop");
+  if(e.dataTransfer?.files.length)openFiles([...e.dataTransfer.files]);
+});
 
 /* ---------- init ---------- */
 (function(){
-  try{localStorage.setItem("json-table:test","1");localStorage.removeItem("json-table:test");}catch{storageOk=false;}
-  try{const s=JSON.parse(readStore(SAVED_KEY)||"[]");if(Array.isArray(s))saved=s.filter(u=>typeof u==="string");}catch{}
-  $("urls").value=readStore(DRAFT_KEY)||"";
+  store("json-table:test","1");try{localStorage.removeItem("json-table:test");}catch{}
+  try{const s=JSON.parse(read(K.saved)||"[]");if(Array.isArray(s))saved=s.filter(u=>typeof u==="string");}catch{}
+  $("urls").value=read(K.draft)||"";
   $("savedBox").open=saved.length>0;
   renderSaved();
-  try{const prev=JSON.parse(readStore(KEY)||"[]");if(Array.isArray(prev)&&prev.length)addUrls(prev.join("\n"));}catch{}
+  try{const prev=JSON.parse(read(K.urls)||"[]");if(Array.isArray(prev)&&prev.length)addUrls(prev.join("\n"));}catch{}
   render();
 })();
 </script>
