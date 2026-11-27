@@ -72,9 +72,9 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
     <div class="flex">
       <button class="primary" id="fetchBtn">Fetch links</button>
       <button id="scanBtn" title="Open each link as an index and list the .json links inside it">Find .json links in file</button>
-      <button id="defBtn" title="Reload every source listed in default-sources.json">Load defaults</button>
+      <button id="defBtn" title="Reload every source listed in this file’s config block">Load defaults</button>
       <button id="reloadBtn">Reload all</button>
-      <span class="muted">GitHub links are converted automatically. Other sites must allow CORS or use a proxy.</span>
+      <span class="muted">GitHub links are converted automatically. Blocked sites fall back to proxies, then to the saved snapshot.</span>
     </div>
     <details class="saved">
       <summary>Open files, paste text, or set a proxy</summary>
@@ -86,6 +86,7 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
           <input id="fileIn" type="file" multiple accept=".json,.jsonl,.ndjson,.txt,text/*,application/json" hidden>
           <span class="muted">Or drop files anywhere on the page. Files are read in your browser and never uploaded.</span>
         </div>
+        <label class="muted" style="display:block;margin-top:8px"><input type="checkbox" id="pub" style="padding:0;vertical-align:middle"> Also try public CORS proxies (corsproxy.io, allorigins.win) when a site blocks the request. They can see the links you fetch.</label>
         <input class="wide" id="proxy" placeholder="Optional proxy used when a direct request fails, e.g. https://my-worker.workers.dev/?url={url}" aria-label="Proxy URL template">
       </div>
     </details>
@@ -101,10 +102,17 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
   <div class="tabs" id="tabs"></div>
   <div class="info">
     <span id="count"></span>
-    <span class="flex"><span id="state"></span><button class="sm" id="csvBtn">Export CSV</button><button class="sm" id="jsonBtn">Export JSON</button></span>
+    <span class="flex"><span id="state"></span><button class="sm" id="snapBtn" title="Download a copy of this page with the loaded data saved inside it">Save snapshot</button><button class="sm" id="csvBtn">Export CSV</button><button class="sm" id="jsonBtn">Export JSON</button></span>
   </div>
   <div id="view"></div>
 </div>
+
+<script type="application/json" id="config">
+{"sources":[
+  {"name":"Example","url":"https://raw.githubusercontent.com/OWNER/REPO/main/data/example.json"}
+]}
+</script>
+<script type="application/json" id="snapshot">{}</script>
 
 <dialog id="dlg" aria-label="Row details">
   <pre id="dlgBody" class="mono"></pre>
@@ -115,10 +123,11 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
 "use strict";
 const $=id=>document.getElementById(id);
 const PAGE=100,TIMEOUT=15000,MAXCOLS=40,MAXSAVED=100,POOL=6,MAXFOUND=500;
-const DEFAULTS="default-sources.json";
-const K={urls:"json-table:urls:v2",saved:"json-table:saved:v1",draft:"json-table:draft:v1",proxy:"json-table:proxy:v1",removed:"json-table:removed:v1"};
+const DEFAULTS="default-sources.json"; // optional extra list next to the page
+const PROXIES=["https://corsproxy.io/?url={url}","https://api.allorigins.win/raw?url={url}"]; // public, last resort
+const K={urls:"json-table:urls:v2",saved:"json-table:saved:v1",draft:"json-table:draft:v1",proxy:"json-table:proxy:v1",removed:"json-table:removed:v1",pub:"json-table:pub:v1"};
 const st={sources:[],active:"all",q:"",sort:null,limit:PAGE,found:[]};
-let uid=1,version=0,allCache=null,saved=[],removed=[],storageOk=true;
+let uid=1,version=0,allCache=null,saved=[],removed=[],storageOk=true,snap={};
 
 const isC=v=>v!==null&&typeof v==="object";
 const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e;};
@@ -234,7 +243,7 @@ function failMsg(e,ctrl,url){
   if(ctrl.signal.reason==="timeout")return"Timed out";
   if(e instanceof TypeError)return location.protocol==="https:"&&/^http:/i.test(url)
     ?"Blocked: an http link can’t be loaded from an https page"
-    :"Request failed (CORS, offline, or blocked). Set a proxy under “Open files, paste text, or set a proxy”, or download the file and use Open files….";
+    :"Request failed (CORS, offline, or blocked). The site blocks cross-origin requests and no saved snapshot exists. Open it in a browser tab, save it, then use Open files…, or set a proxy.";
   return e.message;
 }
 async function get(u,ctrl){
@@ -242,17 +251,25 @@ async function get(u,ctrl){
   if(!r.ok)throw new Error("HTTP "+r.status);
   return r.text();
 }
-// Direct request first; if the browser blocks it and a proxy is set, retry through the proxy.
+const fill=(p,u)=>{const e=encodeURIComponent(u);return p.includes("{url}")?p.replace("{url}",e):p+e;};
+const looksJson=t=>/^\s*[\[{]/.test(t.replace(/^\uFEFF/,""));
+// Order: live URL, your proxy, public proxies (if allowed), then the snapshot saved inside this file.
 async function fetchText(url,ctrl){
   const t=setTimeout(()=>ctrl.abort("timeout"),TIMEOUT);
+  ctrl.snap=false;
   try{
     const target=normalizeUrl(url);
     try{return await get(target,ctrl);}
     catch(e){
-      const p=(read(K.proxy)||"").trim();
-      if(!(e instanceof TypeError)||!p||ctrl.signal.aborted)throw e;
-      const enc=encodeURIComponent(target);
-      return await get(p.includes("{url}")?p.replace("{url}",enc):p+enc,ctrl);
+      if(!(e instanceof TypeError)||ctrl.signal.aborted)throw e; // HTTP errors and timeouts don’t need a proxy
+      const own=(read(K.proxy)||"").trim();
+      const tries=[...(own?[own]:[]),...(read(K.pub)==="0"?[]:PROXIES)];
+      for(const p of tries){
+        try{const x=await get(fill(p,target),ctrl);if(looksJson(x))return x;}
+        catch(e2){if(ctrl.signal.aborted)break;}
+      }
+      if(snap[target]!=null&&!ctrl.signal.aborted){ctrl.snap=true;return snap[target];}
+      throw e;
     }
   }catch(e){throw new Error(failMsg(e,ctrl,url));}
   finally{clearTimeout(t);}
@@ -262,9 +279,10 @@ async function load(s){
   const ctrl=s.ctrl=new AbortController();
   s.loading=true;s.error=null;render();
   try{
-    const rows=findRows(parseLoose(await fetchText(s.url,ctrl)));
+    const text=await fetchText(s.url,ctrl);
+    const rows=findRows(parseLoose(text));
     if(!rows)throw new Error("No list of records found");
-    s.rows=rows;s.cols=colsOf(rows);s.hay=null;
+    s.rows=rows;s.cols=colsOf(rows);s.hay=null;s.raw=text;s.stale=!!ctrl.snap;
   }catch(e){
     if(s.ctrl!==ctrl)return; // superseded by a newer load
     s.rows=[];s.cols=[];s.hay=null;s.error=e.message;
@@ -342,7 +360,7 @@ function renderTabs(){
     box.append(tab);
   };
   if(st.sources.length>1)mk("All","all",false,false);
-  for(const s of st.sources)mk(s.name+(s.loading?" …":s.error?" !":""),s.id,!!s.error,true);
+  for(const s of st.sources)mk(s.name+(s.loading?" …":s.error?" !":s.stale?" (saved)":""),s.id,!!s.error,true);
 }
 function render(){
   renderTabs();
@@ -487,21 +505,33 @@ function updateGo(){
   go.textContent="Load selected ("+n+")";go.disabled=!n;
 }
 
-/* ---------- default-sources.json ---------- */
-// Loads every source listed in the defaults file (same origin as the page, so no CORS),
-// skipping any the user has closed. “Load defaults” brings those back.
+/* ---------- default sources: the list inside this file, plus an optional default-sources.json ---------- */
 async function loadDefaults(restore){
-  const base=new URL(DEFAULTS,location.href).href;
   try{
     if(restore){removed=[];setRemoved();}
-    const list=extractSources(await fetchText(base,new AbortController()),base)
-      .map(o=>({...o,url:normalizeUrl(o.url)})).filter(o=>!removed.includes(o.url));
-    if(!list.length)return restore&&msg("No .json links found in "+DEFAULTS);
+    let list=extractSources($("config").textContent,location.href);
+    try{
+      const u=new URL(DEFAULTS,location.href).href,r=await fetch(u,{cache:"no-cache"});
+      if(r.ok)list=list.concat(extractSources(await r.text(),u));
+    }catch{}
+    list=list.map(o=>({...o,url:normalizeUrl(o.url)})).filter(o=>!removed.includes(o.url));
+    if(!list.length)return restore&&msg("No sources are listed in this file’s config block.");
     addUrls(list,true);
     if(restore)msg("");
-  }catch(e){
-    if(restore||!st.sources.length)msg("Couldn’t load "+DEFAULTS+": "+e.message);
-  }
+  }catch(e){msg("Couldn’t load the default sources: "+e.message);}
+}
+
+/* ---------- snapshot: saves the loaded data inside a new copy of this file ---------- */
+async function saveSnapshot(){
+  const data={};
+  for(const s of st.sources)if(s.url&&s.raw&&!s.error)data[s.url]=s.raw;
+  if(!Object.keys(data).length)return msg("Load at least one link before saving a snapshot.");
+  let html;
+  try{const r=await fetch(location.href,{cache:"no-cache"});if(!r.ok)throw 0;html=await r.text();}
+  catch{return msg("Saving a snapshot needs the page to be served over http(s), not opened from a file.");}
+  html=html.replace(/(<script type="application\/json" id="snapshot">)[\s\S]*?(<\/script>)/,(m,a,b)=>a+JSON.stringify(data).replace(/</g,"\\u003c")+b);
+  download("json-table.html",html,"text/html");
+  msg("");
 }
 
 /* ---------- saved links (stored in this browser only) ---------- */
@@ -543,6 +573,8 @@ $("scanBtn").onclick=scan;
 $("csvBtn").onclick=()=>exportRows("csv");
 $("jsonBtn").onclick=()=>exportRows("json");
 $("proxy").onchange=e=>store(K.proxy,e.target.value.trim());
+$("pub").onchange=e=>store(K.pub,e.target.checked?"1":"0");
+$("snapBtn").onclick=saveSnapshot;
 
 let qT;
 $("q").oninput=e=>{clearTimeout(qT);qT=setTimeout(()=>{st.q=e.target.value.trim();st.limit=PAGE;render();},150);};
@@ -636,10 +668,12 @@ addEventListener("drop",e=>{
   $("proxy").value=read(K.proxy)||"";
   $("savedBox").open=saved.length>0;
   renderSaved();
+  try{snap=JSON.parse($("snapshot").textContent)||{};}catch{}
+  $("pub").checked=read(K.pub)!=="0";
   const prev=readJSON(K.urls,[]);
   if(Array.isArray(prev)&&prev.length)addUrls(prev.filter(o=>o&&typeof o==="object"&&o.url),true);
   render();
-  loadDefaults(false); // picks up new entries in default-sources.json on every visit
+  loadDefaults(false); // picks up new entries in the config on every visit
 })();
 </script>
 </body>
