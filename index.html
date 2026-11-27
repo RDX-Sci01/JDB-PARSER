@@ -19,6 +19,7 @@ button{cursor:pointer}button:hover:not(:disabled){border-color:var(--accent)}but
 .sm{padding:4px 8px;font-size:11px}
 .panel{margin:16px 0 12px;padding:12px;background:var(--panel);border:1px solid var(--line);border-radius:10px}
 textarea{width:100%;min-height:84px;resize:vertical;margin-bottom:8px;font:12px ui-monospace,Menlo,Consolas,monospace}
+.wide{width:100%;margin-top:8px}
 .flex{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 #msg{margin-top:8px;color:var(--danger);white-space:pre-wrap;overflow-wrap:anywhere}
 .search{width:100%;margin-bottom:10px}
@@ -71,11 +72,12 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
     <div class="flex">
       <button class="primary" id="fetchBtn">Fetch links</button>
       <button id="scanBtn" title="Open each link as an index and list the .json links inside it">Find .json links in file</button>
+      <button id="defBtn" title="Reload every source listed in default-sources.json">Load defaults</button>
       <button id="reloadBtn">Reload all</button>
-      <span class="muted">Links must allow cross-origin requests (CORS).</span>
+      <span class="muted">GitHub links are converted automatically. Other sites must allow CORS or use a proxy.</span>
     </div>
     <details class="saved">
-      <summary>Open files or paste text</summary>
+      <summary>Open files, paste text, or set a proxy</summary>
       <div style="margin-top:8px">
         <textarea id="pasteText" placeholder="Paste JSON, JSON Lines, or any text that contains JSON" aria-label="Paste text"></textarea>
         <div class="flex">
@@ -84,6 +86,7 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
           <input id="fileIn" type="file" multiple accept=".json,.jsonl,.ndjson,.txt,text/*,application/json" hidden>
           <span class="muted">Or drop files anywhere on the page. Files are read in your browser and never uploaded.</span>
         </div>
+        <input class="wide" id="proxy" placeholder="Optional proxy used when a direct request fails, e.g. https://my-worker.workers.dev/?url={url}" aria-label="Proxy URL template">
       </div>
     </details>
     <details class="saved" id="savedBox">
@@ -112,9 +115,10 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
 "use strict";
 const $=id=>document.getElementById(id);
 const PAGE=100,TIMEOUT=15000,MAXCOLS=40,MAXSAVED=100,POOL=6,MAXFOUND=500;
-const K={urls:"json-table:urls:v1",saved:"json-table:saved:v1",draft:"json-table:draft:v1"};
+const DEFAULTS="default-sources.json";
+const K={urls:"json-table:urls:v2",saved:"json-table:saved:v1",draft:"json-table:draft:v1",proxy:"json-table:proxy:v1",removed:"json-table:removed:v1"};
 const st={sources:[],active:"all",q:"",sort:null,limit:PAGE,found:[]};
-let uid=1,version=0,allCache=null,saved=[],storageOk=true;
+let uid=1,version=0,allCache=null,saved=[],removed=[],storageOk=true;
 
 const isC=v=>v!==null&&typeof v==="object";
 const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e;};
@@ -122,9 +126,27 @@ const str=(v,n)=>{const s=isC(v)?JSON.stringify(v):String(v);return s.length>n?s
 const msg=t=>{$("msg").textContent=t;};
 const store=(k,v)=>{try{localStorage.setItem(k,v);}catch{storageOk=false;}};
 const read=k=>{try{return localStorage.getItem(k);}catch{storageOk=false;return null;}};
+const readJSON=(k,d)=>{try{const v=JSON.parse(read(k)||"null");return v==null?d:v;}catch{return d;}};
 const splitLinks=t=>[...new Set(t.split(/[\s,]+/).filter(Boolean))];
 const validUrl=u=>{try{return /^https?:$/.test(new URL(u).protocol);}catch{return false;}};
 const button=(label,cls,data)=>{const b=el("button",cls,label);b.type="button";Object.assign(b.dataset,data||{});return b;};
+
+/* ---------- URL helpers ---------- */
+// GitHub page links redirect or return HTML without CORS headers; the raw hosts allow cross-origin reads.
+function normalizeUrl(u){
+  try{
+    const x=new URL(u);
+    if(x.hostname==="github.com"){
+      const m=x.pathname.match(/^\/([^/]+)\/([^/]+)\/(?:blob|raw)\/(.+)$/);
+      if(m)return"https://raw.githubusercontent.com/"+m[1]+"/"+m[2]+"/"+m[3]+x.search;
+    }
+    if(x.hostname==="gist.github.com"){
+      const m=x.pathname.match(/^\/([^/]+)\/([0-9a-f]+)\/?$/i);
+      if(m)return"https://gist.githubusercontent.com/"+m[1]+"/"+m[2]+"/raw";
+    }
+    return x.href;
+  }catch{return u;}
+}
 
 /* ---------- parsing ---------- */
 function parseText(text){
@@ -192,33 +214,46 @@ function colsOf(rows){
 }
 
 /* ---------- sources ---------- */
-function uniqueName(base){let n=base||"pasted",i=2;while(st.sources.some(s=>s.name===n))n=base+" ("+i++ +")";return n;}
+const stripExt=n=>n.replace(/\.(json|jsonl|ndjson|txt)$/i,"");
+function uniqueName(base){base=base||"pasted";let n=base,i=2;while(st.sources.some(s=>s.name===n))n=base+" ("+i++ +")";return n;}
 function nameFor(url){
   const u=new URL(url);
   let n=u.pathname.split("/").filter(Boolean).pop()||u.hostname;
   try{n=decodeURIComponent(n);}catch{}
-  return uniqueName(n.replace(/\.(json|jsonl|ndjson)$/i,""));
+  return uniqueName(stripExt(n));
 }
 function newSource(name,url,rows){
   const s={id:String(uid++),url,name,rows:rows||[],cols:rows?colsOf(rows):[],error:null,loading:!!url,ctrl:null,hay:null};
   st.sources.push(s);version++;
   return s;
 }
-const persist=()=>store(K.urls,JSON.stringify(st.sources.filter(s=>s.url).map(s=>s.url)));
+const persist=()=>store(K.urls,JSON.stringify(st.sources.filter(s=>s.url).map(s=>({url:s.url,name:s.name}))));
+const setRemoved=()=>store(K.removed,JSON.stringify(removed));
 
 function failMsg(e,ctrl,url){
   if(ctrl.signal.reason==="timeout")return"Timed out";
   if(e instanceof TypeError)return location.protocol==="https:"&&/^http:/i.test(url)
     ?"Blocked: an http link can’t be loaded from an https page"
-    :"Request failed (CORS, offline, or blocked). Download the file and use Open files… instead.";
+    :"Request failed (CORS, offline, or blocked). Set a proxy under “Open files, paste text, or set a proxy”, or download the file and use Open files….";
   return e.message;
 }
+async function get(u,ctrl){
+  const r=await fetch(u,{signal:ctrl.signal});
+  if(!r.ok)throw new Error("HTTP "+r.status);
+  return r.text();
+}
+// Direct request first; if the browser blocks it and a proxy is set, retry through the proxy.
 async function fetchText(url,ctrl){
   const t=setTimeout(()=>ctrl.abort("timeout"),TIMEOUT);
   try{
-    const r=await fetch(url,{signal:ctrl.signal});
-    if(!r.ok)throw new Error("HTTP "+r.status);
-    return await r.text();
+    const target=normalizeUrl(url);
+    try{return await get(target,ctrl);}
+    catch(e){
+      const p=(read(K.proxy)||"").trim();
+      if(!(e instanceof TypeError)||!p||ctrl.signal.aborted)throw e;
+      const enc=encodeURIComponent(target);
+      return await get(p.includes("{url}")?p.replace("{url}",enc):p+enc,ctrl);
+    }
   }catch(e){throw new Error(failMsg(e,ctrl,url));}
   finally{clearTimeout(t);}
 }
@@ -242,21 +277,25 @@ async function pool(list){
   const q=[...list];
   await Promise.all(Array.from({length:Math.min(POOL,q.length)},async()=>{for(let s;(s=q.shift());)await load(s);}));
 }
-function addUrls(text){
+// items: link strings or {url,name}. Returns how many sources were added.
+function addUrls(items,quiet){
   const bad=[],added=[];
-  for(const l of splitLinks(text)){
-    if(!validUrl(l)){bad.push(l);continue;}
-    if(st.sources.some(s=>s.url===l))continue;
-    added.push(newSource(nameFor(l),l));
+  for(const it of items){
+    const o=typeof it==="string"?{url:it}:it;
+    if(!o||!validUrl(o.url)){bad.push(o&&o.url||String(it));continue;}
+    const url=normalizeUrl(o.url);
+    if(st.sources.some(s=>s.url===url))continue;
+    removed=removed.filter(u=>u!==url);
+    added.push(newSource(o.name?uniqueName(o.name):nameFor(url),url));
   }
-  msg(bad.length?"Skipped invalid links:\n"+bad.join("\n"):"");
-  if(added.length){persist();st.active=added.length===1?added[0].id:"all";render();pool(added);}
+  if(!quiet)msg(bad.length?"Skipped invalid links:\n"+bad.join("\n"):"");
+  if(added.length){persist();setRemoved();st.active=added.length===1&&st.sources.length===1?added[0].id:"all";render();pool(added);}
   return added.length;
 }
 function addLocal(name,text){
   const rows=findRows(parseLoose(text));
   if(!rows)throw new Error("No list of records found");
-  const s=newSource(uniqueName(name.replace(/\.(json|jsonl|ndjson|txt)$/i,"")||"pasted"),null,rows);
+  const s=newSource(uniqueName(stripExt(name)||"pasted"),null,rows);
   st.active=s.id;
 }
 async function openFiles(files){
@@ -284,7 +323,7 @@ function cmp(a,b,dir){
 function visibleRows(cur){
   let rows=cur.rows;
   if(st.q){
-    const h=cur.source||cur; // cache the search index on the source so it survives re-renders
+    const h=cur.source||cur; // cache the search index so it survives re-renders
     if(!h.hay||h.hay.length!==h.rows.length)h.hay=h.rows.map(r=>Object.values(r).map(v=>isC(v)?JSON.stringify(v):String(v)).join("\u0001").toLowerCase());
     const q=st.q.toLowerCase();
     rows=rows.filter((r,i)=>h.hay[i].includes(q)); // values only, so “name” doesn’t match every key
@@ -308,9 +347,8 @@ function renderTabs(){
 function render(){
   renderTabs();
   const box=$("view");box.replaceChildren();
-  const empty=!st.sources.length;
   $("csvBtn").disabled=$("jsonBtn").disabled=true;
-  if(empty){$("count").textContent=$("state").textContent="";box.append(el("div","empty","Add one or more JSON links above, or open a file."));return;}
+  if(!st.sources.length){$("count").textContent=$("state").textContent="";box.append(el("div","empty","Add one or more JSON links above, or open a file."));return;}
   if(st.active==="all"&&st.sources.length===1)st.active=st.sources[0].id;
 
   const loading=st.sources.filter(s=>s.loading).length,failed=st.sources.filter(s=>s.error).length;
@@ -366,43 +404,60 @@ function exportRows(kind){
   download(name+".csv","\uFEFF"+csv,"text/csv");
 }
 
-/* ---------- index scanning ---------- */
-const END="[\\s\"'<>\\\\)\\]},]";
-const ABS_RE=new RegExp("https?:\\/\\/[^\\s\"'<>\\\\)\\]},]+?\\.(?:json|jsonl|ndjson)(?:\\?[^\\s\"'<>\\\\)\\]},]*)?(?="+END+"|$)","gi");
+/* ---------- index files: find the links inside them ---------- */
+const ABS_RE=/https?:\/\/[^\s"'<>\\)\]},]+?\.(?:json|jsonl|ndjson)(?:\?[^\s"'<>\\)\]},]*)?(?=[\s"'<>\\)\]},]|$)/gi;
 const REL_RE=/\.(?:json|jsonl|ndjson)(?:\?\S*)?$/i;
 const ATTR_RE=/(?:href|src)=["']([^"']+\.(?:json|jsonl|ndjson)(?:\?[^"']*)?)["']/gi;
+const LINK_KEYS=["url","href","link","file","path","src","source"];
+const NAME_KEYS=["name","title","label","id"];
 
-// Finds .json links in any text: JSON values, HTML attributes, Markdown or plain text.
-function extractLinks(text,base){
-  const out=new Set();
-  const add=s=>{try{const u=new URL(s,base);if(/^https?:$/.test(u.protocol))out.add(u.href);}catch{}};
-  (text.match(ABS_RE)||[]).forEach(add);
+// Returns [{url,name?}] from a JSON index (strings ending in .json, or url/href/file fields on objects),
+// or from HTML, Markdown and plain text. Relative links resolve against `base`.
+function extractSources(text,base){
+  const out=new Map();
+  const add=(s,name)=>{
+    try{
+      const u=new URL(s.trim(),base);
+      if(!/^https?:$/.test(u.protocol))return;
+      const prev=out.get(u.href);
+      if(!prev)out.set(u.href,{url:u.href,name:name||""});else if(!prev.name&&name)prev.name=name;
+    }catch{}
+  };
   let data;
   try{data=JSON.parse(text.replace(/^\uFEFF/,""));}catch{}
   if(data!==undefined){
-    (function walk(v){
-      if(typeof v==="string"){if(REL_RE.test(v)&&!/\s/.test(v))add(v);}
-      else if(isC(v))for(const k in v)walk(v[k]);
-    })(data);
-  }else for(const m of text.matchAll(ATTR_RE))add(m[1]);
+    (function walk(v,name){
+      if(typeof v==="string"){if(REL_RE.test(v)&&!/\s/.test(v))add(v,name);}
+      else if(Array.isArray(v))v.forEach(x=>walk(x,name));
+      else if(isC(v)){
+        const n=NAME_KEYS.map(k=>v[k]).find(x=>typeof x==="string"&&x.trim())||"";
+        for(const k of LINK_KEYS)if(typeof v[k]==="string"&&v[k].trim()&&!/\s/.test(v[k].trim()))add(v[k],n);
+        for(const k in v)walk(v[k],n||name);
+      }
+    })(data,"");
+  }else{
+    (text.match(ABS_RE)||[]).forEach(s=>add(s));
+    for(const m of text.matchAll(ATTR_RE))add(m[1]);
+  }
   try{out.delete(new URL(base).href);}catch{}
-  return [...out].slice(0,MAXFOUND);
+  return [...out.values()].slice(0,MAXFOUND);
 }
 async function scan(){
   const idx=splitLinks($("urls").value);
   if(!idx.length)return msg("Enter the link of a file to scan.");
   remember(idx.join("\n"));msg("");
   const btn=$("scanBtn");btn.disabled=true;btn.textContent="Scanning…";
-  const errs=[],empty=[],found=new Set();
+  const errs=[],empty=[],found=new Map();
   await Promise.all(idx.map(async u=>{
     try{
       if(!validUrl(u))throw new Error("Not a valid link");
-      const links=extractLinks(await fetchText(u,new AbortController()),u);
-      if(!links.length)empty.push(u);
-      links.forEach(l=>found.add(l));
+      const base=normalizeUrl(u);
+      const list=extractSources(await fetchText(u,new AbortController()),base);
+      if(!list.length)empty.push(u);
+      list.forEach(o=>{const url=normalizeUrl(o.url);if(!found.has(url))found.set(url,{...o,url});});
     }catch(e){errs.push(u+": "+e.message);}
   }));
-  st.found=[...found].map(url=>{const added=st.sources.some(s=>s.url===url);return{url,added,checked:!added};});
+  st.found=[...found.values()].map(o=>{const added=st.sources.some(s=>s.url===o.url);return{...o,added,checked:!added};});
   const m=[];
   if(errs.length)m.push("Couldn’t scan:\n"+errs.join("\n"));
   if(empty.length)m.push("No .json links found in:\n"+empty.join("\n"));
@@ -420,7 +475,7 @@ function renderFound(){
   st.found.forEach((f,i)=>{
     const lb=el("label","fitem mono"),c=el("input");
     c.type="checkbox";c.checked=f.checked;c.disabled=f.added;c.dataset.fi=i;
-    lb.append(c,el("span",null,f.url+(f.added?" (already added)":"")));
+    lb.append(c,el("span",null,(f.name?f.name+" — ":"")+f.url+(f.added?" (already added)":"")));
     ul.append(lb);
   });
   box.append(head,ul);
@@ -430,6 +485,23 @@ function updateGo(){
   const go=document.querySelector("[data-fa=load]");if(!go)return;
   const n=st.found.filter(f=>f.checked).length;
   go.textContent="Load selected ("+n+")";go.disabled=!n;
+}
+
+/* ---------- default-sources.json ---------- */
+// Loads every source listed in the defaults file (same origin as the page, so no CORS),
+// skipping any the user has closed. “Load defaults” brings those back.
+async function loadDefaults(restore){
+  const base=new URL(DEFAULTS,location.href).href;
+  try{
+    if(restore){removed=[];setRemoved();}
+    const list=extractSources(await fetchText(base,new AbortController()),base)
+      .map(o=>({...o,url:normalizeUrl(o.url)})).filter(o=>!removed.includes(o.url));
+    if(!list.length)return restore&&msg("No .json links found in "+DEFAULTS);
+    addUrls(list,true);
+    if(restore)msg("");
+  }catch(e){
+    if(restore||!st.sources.length)msg("Couldn’t load "+DEFAULTS+": "+e.message);
+  }
 }
 
 /* ---------- saved links (stored in this browser only) ---------- */
@@ -460,15 +532,17 @@ function renderSaved(){
 /* ---------- events ---------- */
 $("fetchBtn").onclick=()=>{
   const t=$("urls").value;remember(t);
-  if(addUrls(t)){$("urls").value="";store(K.draft,"");}
+  if(addUrls(splitLinks(t))){$("urls").value="";store(K.draft,"");}
   render();
 };
 $("urls").addEventListener("keydown",e=>{if(e.key==="Enter"&&(e.ctrlKey||e.metaKey))$("fetchBtn").click();});
 $("urls").addEventListener("input",()=>store(K.draft,$("urls").value));
 $("reloadBtn").onclick=()=>pool(st.sources.filter(s=>s.url));
+$("defBtn").onclick=()=>loadDefaults(true);
 $("scanBtn").onclick=scan;
 $("csvBtn").onclick=()=>exportRows("csv");
 $("jsonBtn").onclick=()=>exportRows("json");
+$("proxy").onchange=e=>store(K.proxy,e.target.value.trim());
 
 let qT;
 $("q").oninput=e=>{clearTimeout(qT);qT=setTimeout(()=>{st.q=e.target.value.trim();st.limit=PAGE;render();},150);};
@@ -476,7 +550,9 @@ $("q").oninput=e=>{clearTimeout(qT);qT=setTimeout(()=>{st.q=e.target.value.trim(
 $("tabs").onclick=e=>{
   const c=e.target.closest("[data-close]"),t=e.target.closest("[data-tab]");
   if(c){
-    st.sources.find(x=>x.id===c.dataset.close)?.ctrl?.abort();
+    const s=st.sources.find(x=>x.id===c.dataset.close);
+    s?.ctrl?.abort();
+    if(s?.url&&!removed.includes(s.url)){removed.push(s.url);setRemoved();}
     st.sources=st.sources.filter(x=>x.id!==c.dataset.close);version++;persist();
     if(st.active===c.dataset.close||!st.sources.length)st.active="all";
     st.sort=null;render();
@@ -510,9 +586,9 @@ $("found").addEventListener("click",e=>{
   if(a==="none")st.found.forEach(f=>{f.checked=false;});
   if(a==="dismiss")st.found=[];
   if(a==="load"){
-    const urls=st.found.filter(f=>f.checked).map(f=>f.url);
+    const items=st.found.filter(f=>f.checked).map(({url,name})=>({url,name}));
     st.found=[];$("urls").value="";store(K.draft,"");
-    addUrls(urls.join("\n"));render();
+    addUrls(items);render();
   }
   renderFound();
 });
@@ -532,7 +608,7 @@ $("saved").addEventListener("click",e=>{
   }else if(act==="clear"){
     if(confirm("Remove all saved links?")){saved=[];store(K.saved,"[]");renderSaved();}
   }else if(act==="loadall"){
-    addUrls(saved.join("\n"));render();
+    addUrls(saved);render();
   }
 });
 
@@ -552,14 +628,18 @@ addEventListener("drop",e=>{
 });
 
 /* ---------- init ---------- */
-(function(){
+(async function(){
   store("json-table:test","1");try{localStorage.removeItem("json-table:test");}catch{}
-  try{const s=JSON.parse(read(K.saved)||"[]");if(Array.isArray(s))saved=s.filter(u=>typeof u==="string");}catch{}
+  const s=readJSON(K.saved,[]);if(Array.isArray(s))saved=s.filter(u=>typeof u==="string");
+  const r=readJSON(K.removed,[]);if(Array.isArray(r))removed=r.filter(u=>typeof u==="string");
   $("urls").value=read(K.draft)||"";
+  $("proxy").value=read(K.proxy)||"";
   $("savedBox").open=saved.length>0;
   renderSaved();
-  try{const prev=JSON.parse(read(K.urls)||"[]");if(Array.isArray(prev)&&prev.length)addUrls(prev.join("\n"));}catch{}
+  const prev=readJSON(K.urls,[]);
+  if(Array.isArray(prev)&&prev.length)addUrls(prev.filter(o=>o&&typeof o==="object"&&o.url),true);
   render();
+  loadDefaults(false); // picks up new entries in default-sources.json on every visit
 })();
 </script>
 </body>
