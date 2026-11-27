@@ -102,7 +102,7 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
   <div class="tabs" id="tabs"></div>
   <div class="info">
     <span id="count"></span>
-    <span class="flex"><span id="state"></span><button class="sm" id="snapBtn" title="Download a copy of this page with the loaded data saved inside it">Save snapshot</button><button class="sm" id="csvBtn">Export CSV</button><button class="sm" id="jsonBtn">Export JSON</button></span>
+    <span class="flex"><span id="state"></span><button class="sm" id="snapBtn" title="Download a copy of this page with the loaded data saved inside it">Save snapshot</button><button class="sm" id="csvBtn">Export CSV</button><button class="sm" id="jsonBtn">Export JSON</button><button class="sm" id="clearBtn" title="Clear rows from the selected source, or all sources when All is selected">Clear rows</button></span>
   </div>
   <div id="view"></div>
 </div>
@@ -122,9 +122,13 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
 <script>
 "use strict";
 const $=id=>document.getElementById(id);
-const PAGE=100,TIMEOUT=15000,MAXCOLS=40,MAXSAVED=100,POOL=6,MAXFOUND=500;
+const PAGE=100,TIMEOUT=12000,MAX_RESPONSE_BYTES=25*1024*1024,MAXCOLS=40,MAXSAVED=100,POOL=4,MAXFOUND=500,MAX_ENTRIES_PER_FILE=10;
 const DEFAULTS="default-sources.json"; // optional extra list next to the page
-const PROXIES=["https://corsproxy.io/?url={url}","https://api.allorigins.win/raw?url={url}"]; // public, last resort
+const PROXIES=[
+  "https://corsproxy.io/?url={url}",
+  "https://api.allorigins.win/raw?url={url}",
+  "https://api.codetabs.com/v1/proxy?quest={url}"
+]; // public services are best-effort only
 const K={urls:"json-table:urls:v2",saved:"json-table:saved:v1",draft:"json-table:draft:v1",proxy:"json-table:proxy:v1",removed:"json-table:removed:v1",pub:"json-table:pub:v1"};
 const st={sources:[],active:"all",q:"",sort:null,limit:PAGE,found:[]};
 let uid=1,version=0,allCache=null,saved=[],removed=[],storageOk=true,snap={};
@@ -209,12 +213,15 @@ function findRows(d){
     rows=direct(d);
     if(!rows){
       const e=Object.entries(d);
-      const keyed=e.length&&e.every(([,v])=>isC(v)&&!Array.isArray(v))?e.map(([k,v])=>({_key:k,...v})):null;
+      // For keyed-record JSON objects, retain only the final 10 keys.
+      const keyed=e.length&&e.every(([,v])=>isC(v)&&!Array.isArray(v))
+        ?e.slice(-MAX_ENTRIES_PER_FILE).map(([k,v])=>({_key:k,...v})):null;
       rows=keyed&&e.length>1?keyed:deep(d,0)||keyed;
     }
   }
   if(!rows||!rows.length)return null;
-  return rows.map(r=>isC(r)&&!Array.isArray(r)?r:{value:r});
+  // Treat array order as chronological: keep the final (newest) 10 records.
+  return rows.slice(-MAX_ENTRIES_PER_FILE).map(r=>isC(r)&&!Array.isArray(r)?r:{value:r});
 }
 function colsOf(rows){
   const seen=new Set(),cols=[];
@@ -240,39 +247,80 @@ const persist=()=>store(K.urls,JSON.stringify(st.sources.filter(s=>s.url).map(s=
 const setRemoved=()=>store(K.removed,JSON.stringify(removed));
 
 function failMsg(e,ctrl,url){
-  if(ctrl.signal.reason==="timeout")return"Timed out";
+  if(ctrl.signal.aborted)return "Request cancelled";
   if(e instanceof TypeError)return location.protocol==="https:"&&/^http:/i.test(url)
-    ?"Blocked: an http link can’t be loaded from an https page"
-    :"Request failed (CORS, offline, or blocked). The site blocks cross-origin requests and no saved snapshot exists. Open it in a browser tab, save it, then use Open files…, or set a proxy.";
-  return e.message;
+    ?"Blocked: an http link can’t be loaded from an https page. Use the HTTPS version of the JSON URL."
+    :"The browser could not read this URL. This is usually CORS, a network failure, or a blocked request. Try the source’s direct JSON/raw URL, a trusted proxy, or Open files…";
+  return e.message||"The request failed";
 }
-async function get(u,ctrl){
-  const r=await fetch(u,{signal:ctrl.signal});
-  if(!r.ok)throw new Error("HTTP "+r.status);
-  return r.text();
+// Each endpoint gets its own timeout. Cancelling a source still cancels the active attempt.
+async function get(u,parentCtrl){
+  const requestCtrl=new AbortController();
+  const onParentAbort=()=>requestCtrl.abort(parentCtrl.signal.reason||"cancelled");
+  if(parentCtrl.signal.aborted)onParentAbort();
+  else parentCtrl.signal.addEventListener("abort",onParentAbort,{once:true});
+  const timer=setTimeout(()=>requestCtrl.abort("timeout"),TIMEOUT);
+  try{
+    const r=await fetch(u,{signal:requestCtrl.signal,cache:"no-store",credentials:"omit",mode:"cors",redirect:"follow",headers:{Accept:"application/json, application/ld+json, text/plain, */*"}});
+    if(!r.ok)throw new Error("HTTP "+r.status+(r.statusText?" "+r.statusText:""));
+    const declared=Number(r.headers.get("content-length")||0);
+    if(declared>MAX_RESPONSE_BYTES)throw new Error("Response is larger than the 25 MB safety limit");
+    if(!r.body){const text=await r.text();if(new Blob([text]).size>MAX_RESPONSE_BYTES)throw new Error("Response is larger than the 25 MB safety limit");return text;}
+    const reader=r.body.getReader(),decoder=new TextDecoder();
+    let size=0,text="";
+    try{
+      while(true){
+        const part=await reader.read();
+        if(part.done)break;
+        size+=part.value.byteLength;
+        if(size>MAX_RESPONSE_BYTES){await reader.cancel();throw new Error("Response is larger than the 25 MB safety limit");}
+        text+=decoder.decode(part.value,{stream:true});
+      }
+      text+=decoder.decode();
+    }finally{reader.releaseLock();}
+    return text;
+  }catch(e){
+    if(parentCtrl.signal.aborted)throw new Error("Request cancelled");
+    if(requestCtrl.signal.aborted&&requestCtrl.signal.reason==="timeout")throw new Error("Timed out after "+(TIMEOUT/1000)+" seconds");
+    throw e;
+  }finally{
+    clearTimeout(timer);
+    parentCtrl.signal.removeEventListener("abort",onParentAbort);
+  }
 }
 const fill=(p,u)=>{const e=encodeURIComponent(u);return p.includes("{url}")?p.replace("{url}",e):p+e;};
-const looksJson=t=>/^\s*[\[{]/.test(t.replace(/^\uFEFF/,""));
-// Order: live URL, your proxy, public proxies (if allowed), then the snapshot saved inside this file.
+const looksJson=t=>/^[\s\uFEFF]*[\[{]/.test(t);
+function validateJsonResponse(text){
+  if(!looksJson(text))throw new Error("The URL returned a web page or non-JSON content, not JSON");
+  const parsed=parseLoose(text);
+  if(!findRows(parsed))throw new Error("Valid JSON was returned, but no record list was found");
+  return text;
+}
+// Try direct first, then a user proxy, then optional public proxies, then the embedded snapshot.
 async function fetchText(url,ctrl){
-  const t=setTimeout(()=>ctrl.abort("timeout"),TIMEOUT);
   ctrl.snap=false;
-  try{
-    const target=normalizeUrl(url);
-    try{return await get(target,ctrl);}
+  const target=normalizeUrl(url),attempts=[{label:"Direct URL",url:target}];
+  const own=(read(K.proxy)||"").trim();
+  if(own)attempts.push({label:"Custom proxy",url:fill(own,target)});
+  if(read(K.pub)!=="0")for(const p of PROXIES)attempts.push({label:"Public proxy",url:fill(p,target)});
+  const tried=new Set(),errors=[];
+  for(const a of attempts){
+    if(ctrl.signal.aborted)throw new Error("Request cancelled");
+    if(tried.has(a.url))continue;
+    tried.add(a.url);
+    try{return validateJsonResponse(await get(a.url,ctrl));}
     catch(e){
-      if(!(e instanceof TypeError)||ctrl.signal.aborted)throw e; // HTTP errors and timeouts don’t need a proxy
-      const own=(read(K.proxy)||"").trim();
-      const tries=[...(own?[own]:[]),...(read(K.pub)==="0"?[]:PROXIES)];
-      for(const p of tries){
-        try{const x=await get(fill(p,target),ctrl);if(looksJson(x))return x;}
-        catch(e2){if(ctrl.signal.aborted)break;}
-      }
-      if(snap[target]!=null&&!ctrl.signal.aborted){ctrl.snap=true;return snap[target];}
-      throw e;
+      if(ctrl.signal.aborted)throw new Error("Request cancelled");
+      errors.push(a.label+": "+(e.message||"failed"));
     }
-  }catch(e){throw new Error(failMsg(e,ctrl,url));}
-  finally{clearTimeout(t);}
+  }
+  if(snap[target]!=null){
+    try{validateJsonResponse(snap[target]);ctrl.snap=true;return snap[target];}
+    catch(e){errors.push("Saved snapshot: "+e.message);}
+  }
+  const summary=errors.join(" | ");
+  const host=(()=>{try{return new URL(target).host;}catch{return target;}})();
+  throw new Error("Could not load JSON from "+host+". "+summary+". The URL may work when opened directly but still block JavaScript access (CORS). Try a trusted custom proxy, use a local JSON file, or save a snapshot. Public proxies are best-effort and may be unavailable or rate-limited.");
 }
 async function load(s){
   s.ctrl?.abort();
@@ -282,10 +330,12 @@ async function load(s){
     const text=await fetchText(s.url,ctrl);
     const rows=findRows(parseLoose(text));
     if(!rows)throw new Error("No list of records found");
-    s.rows=rows;s.cols=colsOf(rows);s.hay=null;s.raw=text;s.stale=!!ctrl.snap;
+    s.rows=rows;s.cols=colsOf(rows);s.hay=null;s.raw=JSON.stringify(rows);s.stale=!!ctrl.snap;
   }catch(e){
     if(s.ctrl!==ctrl)return; // superseded by a newer load
-    s.rows=[];s.cols=[];s.hay=null;s.error=e.message;
+    // Never discard the last good result just because a refresh failed.
+    s.error=e.message;
+    s.stale=!!(s.rows&&s.rows.length);
   }finally{
     if(s.ctrl===ctrl){s.loading=false;s.ctrl=null;version++;render();}
   }
@@ -314,6 +364,7 @@ function addLocal(name,text){
   const rows=findRows(parseLoose(text));
   if(!rows)throw new Error("No list of records found");
   const s=newSource(uniqueName(stripExt(name)||"pasted"),null,rows);
+  s.raw=JSON.stringify(rows);
   st.active=s.id;
 }
 async function openFiles(files){
@@ -366,18 +417,30 @@ function render(){
   renderTabs();
   const box=$("view");box.replaceChildren();
   $("csvBtn").disabled=$("jsonBtn").disabled=true;
+  $("clearBtn").disabled=true;
   if(!st.sources.length){$("count").textContent=$("state").textContent="";box.append(el("div","empty","Add one or more JSON links above, or open a file."));return;}
   if(st.active==="all"&&st.sources.length===1)st.active=st.sources[0].id;
 
   const loading=st.sources.filter(s=>s.loading).length,failed=st.sources.filter(s=>s.error).length;
-  $("state").textContent=st.sources.length+(st.sources.length===1?" source":" sources")+(loading?" · loading "+loading:"")+(failed?" · "+failed+" failed":"");
+  const stale=st.sources.filter(s=>s.error&&s.rows.length).length;
+  $("state").textContent=st.sources.length+(st.sources.length===1?" source":" sources")+(loading?" · loading "+loading:"")+(failed?" · "+failed+" failed":"")+(stale?" · "+stale+" showing saved data":"");
 
   const cur=current(),src=cur.source;
-  if(src&&src.loading){$("count").textContent="";box.append(el("div","empty","Loading…"));return;}
-  if(src&&src.error){
+  $("clearBtn").disabled=st.active==="all"
+    ?!st.sources.some(s=>s.rows.length>0)
+    :!(src&&src.rows.length>0);
+  if(src&&src.loading&&!src.rows.length){$("count").textContent="";box.append(el("div","empty","Loading…"));return;}
+  if(src&&src.error&&!src.rows.length){
     $("count").textContent="";
     const e=el("div","empty");e.append(el("div","err",src.error),el("div","muted",src.url));
     box.append(e);return;
+  }
+  if(src&&src.error&&src.rows.length){
+    const notice=el("div","panel");notice.style.margin="0 0 8px";
+    notice.append(el("div","err","Refresh failed — showing the last successful data."),el("div","muted",src.error));
+    box.append(notice);
+  }else if(src&&src.loading&&src.rows.length){
+    box.append(el("div","muted","Refreshing — the last successful data remains visible."));
   }
   const rows=visibleRows(cur);
   $("count").textContent=rows.length+(rows.length===cur.rows.length?"":" of "+cur.rows.length)+(rows.length===1?" row":" rows");
@@ -406,6 +469,23 @@ function render(){
     const b=el("button","more","Show "+Math.min(PAGE,rows.length-st.limit)+" more ("+(rows.length-st.limit)+" hidden)");
     b.dataset.more="1";box.append(b);
   }
+}
+
+function clearRows(){
+  const targets=st.active==="all"
+    ?st.sources
+    :st.sources.filter(s=>s.id===st.active);
+  if(!targets.some(s=>s.rows.length))return;
+  const scope=st.active==="all"?"all loaded sources":"the selected source";
+  if(!confirm("Clear rows from "+scope+"? The source tabs and saved links will remain. You can reload the URLs to fetch the rows again."))return;
+  for(const s of targets){
+    s.ctrl?.abort();
+    s.ctrl=null;s.loading=false;s.rows=[];s.cols=[];s.hay=null;
+    s.raw=null;s.stale=false;s.error=null;
+  }
+  version++;allCache=null;st.sort=null;st.limit=PAGE;
+  msg("Rows cleared. Source links were kept; use Reload all to fetch them again.");
+  render();
 }
 
 /* ---------- export ---------- */
@@ -524,7 +604,7 @@ async function loadDefaults(restore){
 /* ---------- snapshot: saves the loaded data inside a new copy of this file ---------- */
 async function saveSnapshot(){
   const data={};
-  for(const s of st.sources)if(s.url&&s.raw&&!s.error)data[s.url]=s.raw;
+  for(const s of st.sources)if(s.url&&s.raw)data[s.url]=s.raw;
   if(!Object.keys(data).length)return msg("Load at least one link before saving a snapshot.");
   let html;
   try{const r=await fetch(location.href,{cache:"no-cache"});if(!r.ok)throw 0;html=await r.text();}
@@ -572,6 +652,7 @@ $("defBtn").onclick=()=>loadDefaults(true);
 $("scanBtn").onclick=scan;
 $("csvBtn").onclick=()=>exportRows("csv");
 $("jsonBtn").onclick=()=>exportRows("json");
+$("clearBtn").onclick=clearRows;
 $("proxy").onchange=e=>store(K.proxy,e.target.value.trim());
 $("pub").onchange=e=>store(K.pub,e.target.checked?"1":"0");
 $("snapBtn").onclick=saveSnapshot;
