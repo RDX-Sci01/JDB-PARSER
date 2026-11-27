@@ -1,0 +1,457 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JSON Catalog Explorer</title>
+<style>
+* { box-sizing: border-box }
+
+body {
+    margin: 0;
+    padding: 22px;
+    background: #0b1020;
+    color: #e2e8f0;
+    font: 13px Inter, system-ui, sans-serif;
+}
+
+.app { max-width: 1050px; margin: auto }
+
+header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 18px;
+}
+
+h2 { font-size: 19px; margin: 0 }
+.muted { color: #8290a8; font-size: 11px }
+
+button, input, select {
+    background: #151e32;
+    color: #e2e8f0;
+    border: 1px solid #2b3852;
+    border-radius: 7px;
+    padding: 9px 11px;
+    font: inherit;
+}
+
+button { cursor: pointer }
+button:hover { border-color: #818cf8 }
+.primary { background: #4f46e5; border-color: #4f46e5 }
+
+.toolbar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.search { flex: 1; min-width: 170px }
+select { cursor: pointer }
+
+.sources {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    margin-bottom: 12px;
+}
+
+.tab {
+    white-space: nowrap;
+    background: #151e32;
+    color: #94a3b8;
+    padding: 8px 12px;
+    border-radius: 7px;
+    border: 1px solid #293750;
+}
+
+.tab.active {
+    color: white;
+    background: #28345a;
+    border-color: #6366f1;
+}
+
+.stats {
+    display: flex;
+    justify-content: space-between;
+    color: #8290a8;
+    margin: 12px 2px;
+    font-size: 11px;
+}
+
+.list {
+    border: 1px solid #293750;
+    border-radius: 9px;
+    overflow: hidden;
+}
+
+.item {
+    border-bottom: 1px solid #293750;
+    background: #111a2c;
+}
+
+.item:last-child { border: 0 }
+
+.item-head {
+    padding: 11px 13px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+}
+
+.item-head:hover { background: #1a2740 }
+
+.item-name {
+    font-weight: 600;
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.item-info {
+    color: #8290a8;
+    font-size: 11px;
+    text-align: right;
+}
+
+.tag {
+    background: #26345a;
+    color: #a5b4fc;
+    padding: 3px 7px;
+    border-radius: 5px;
+    font-size: 10px;
+}
+
+.json {
+    padding: 12px;
+    background: #0a1120;
+    border-top: 1px solid #293750;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    overflow-x: auto;
+    color: #a5f3fc;
+    font: 11px/1.6 monospace;
+    display: none;
+}
+
+.item.open .json { display: block }
+
+.empty {
+    padding: 35px;
+    text-align: center;
+    color: #8290a8;
+}
+
+#addPanel {
+    display: none;
+    padding: 13px;
+    background: #151e32;
+    border: 1px solid #293750;
+    border-radius: 9px;
+    margin-bottom: 12px;
+}
+
+#addPanel input { width: 100%; margin-bottom: 8px }
+
+@media(max-width: 550px) {
+    body { padding: 12px }
+    header { align-items: flex-start }
+    .item-info { display: none }
+}
+</style>
+</head>
+
+<body>
+<div class="app">
+
+<header>
+    <div>
+        <h2>◈ Catalog Explorer</h2>
+        <div class="muted">Multi-source JSON browser</div>
+    </div>
+    <button class="primary" onclick="toggleAdd()">+ Add URL</button>
+</header>
+
+<div id="addPanel">
+    <input id="sourceName" placeholder="Catalog name (e.g. PFS)">
+    <input id="sourceUrl" placeholder="https://example.com/catalog.json">
+    <div style="display:flex;gap:7px">
+        <button class="primary" onclick="addSource()">Add catalog</button>
+        <button onclick="toggleAdd()">Cancel</button>
+    </div>
+</div>
+
+<div class="toolbar">
+    <input class="search" id="search" placeholder="⌕ Search all entries..."
+        oninput="render()">
+
+    <select id="sort" onchange="render()">
+        <option value="name">Name A–Z</option>
+        <option value="nameDesc">Name Z–A</option>
+        <option value="dateDesc">Newest first</option>
+        <option value="dateAsc">Oldest first</option>
+    </select>
+
+    <button onclick="refreshAll()">↻</button>
+</div>
+
+<div class="sources" id="tabs"></div>
+
+<div class="stats">
+    <span id="entryCount">0 entries</span>
+    <span id="status">Ready</span>
+</div>
+
+<div class="list" id="list">
+    <div class="empty">Loading catalogs...</div>
+</div>
+
+</div>
+
+<script>
+const initialSources = [
+    {
+        name: "PFS",
+        url: "https://pegasus-dl.dev/catalogs/pfs.json"
+    }
+];
+
+let sources = [];
+let active = "all";
+let entries = [];
+
+const $ = id => document.getElementById(id);
+
+function toggleAdd() {
+    const panel = $("addPanel");
+    panel.style.display =
+        panel.style.display === "block" ? "none" : "block";
+}
+
+async function loadSource(source) {
+    source.loading = true;
+    renderTabs();
+
+    try {
+        const response = await fetch(source.url);
+
+        if (!response.ok)
+            throw new Error("HTTP " + response.status);
+
+        source.data = await response.json();
+        source.error = null;
+        source.loaded = new Date();
+
+    } catch (e) {
+        source.error = e.message;
+        source.data = null;
+    }
+
+    source.loading = false;
+    renderTabs();
+    render();
+}
+
+function normalize(data, source) {
+    if (Array.isArray(data)) return data;
+
+    if (data && typeof data === "object") {
+        // Automatically detect common catalog containers
+        for (const key of ["items", "entries", "catalog", "results", "data"]) {
+            if (Array.isArray(data[key])) return data[key];
+        }
+
+        return Object.entries(data).map(([key, value]) => {
+            if (value && typeof value === "object" && !Array.isArray(value)) {
+                return { id: key, ...value };
+            }
+            return { id: key, value };
+        });
+    }
+
+    return [];
+}
+
+function getName(item, index) {
+    if (typeof item !== "object" || item === null)
+        return String(item);
+
+    return String(
+        item.name ??
+        item.title ??
+        item.label ??
+        item.id ??
+        item.slug ??
+        "Entry " + (index + 1)
+    );
+}
+
+function addSource() {
+    const name = $("sourceName").value.trim();
+    const url = $("sourceUrl").value.trim();
+
+    if (!url) return alert("Enter a JSON URL");
+
+    try {
+        const parsed = new URL(url);
+        if (!["https:", "http:"].includes(parsed.protocol))
+            throw new Error();
+    } catch {
+        return alert("Enter a valid HTTP or HTTPS URL");
+    }
+
+    if (sources.some(s => s.url === url))
+        return alert("This URL is already added");
+
+    const source = {
+        name: name || new URL(url).hostname,
+        url
+    };
+
+    sources.push(source);
+    $("sourceName").value = "";
+    $("sourceUrl").value = "";
+    $("addPanel").style.display = "none";
+
+    active = source.name;
+    loadSource(source);
+}
+
+function renderTabs() {
+    $("tabs").innerHTML = "";
+
+    const all = document.createElement("button");
+    all.className = "tab" + (active === "all" ? " active" : "");
+    all.textContent = "All";
+    all.onclick = () => { active = "all"; renderTabs(); render(); };
+    $("tabs").appendChild(all);
+
+    sources.forEach(source => {
+        const tab = document.createElement("button");
+        tab.className = "tab" +
+            (active === source.name ? " active" : "");
+
+        tab.textContent = source.name +
+            (source.error ? " !" : source.loading ? " …" : "");
+
+        tab.onclick = () => {
+            active = source.name;
+            renderTabs();
+            render();
+        };
+
+        $("tabs").appendChild(tab);
+    });
+}
+
+function getEntries() {
+    let result = [];
+
+    sources.forEach(source => {
+        if (!source.data) return;
+        if (active !== "all" && active !== source.name) return;
+
+        normalize(source.data, source).forEach((item, index) => {
+            result.push({
+                item,
+                name: getName(item, index),
+                source: source.name,
+                index
+            });
+        });
+    });
+
+    return result;
+}
+
+function render() {
+    const query = $("search").value.toLowerCase();
+    const sort = $("sort").value;
+
+    let data = getEntries().filter(entry => {
+        return (
+            entry.name + " " +
+            entry.source + " " +
+            JSON.stringify(entry.item)
+        ).toLowerCase().includes(query);
+    });
+
+    data.sort((a, b) => {
+        if (sort === "name") return a.name.localeCompare(b.name);
+        if (sort === "nameDesc") return b.name.localeCompare(a.name);
+
+        const date = item =>
+            new Date(
+                item.created_at ??
+                item.updated_at ??
+                item.date ??
+                item.timestamp ??
+                0
+            ).getTime() || 0;
+
+        return sort === "dateDesc"
+            ? date(b.item) - date(a.item)
+            : date(a.item) - date(b.item);
+    });
+
+    $("entryCount").textContent = data.length + " entries";
+    $("status").textContent = sources.length + " sources";
+
+    const list = $("list");
+    list.innerHTML = "";
+
+    if (!data.length) {
+        list.innerHTML = '<div class="empty">No entries found</div>';
+        return;
+    }
+
+    data.forEach(entry => {
+        const item = document.createElement("div");
+        item.className = "item";
+
+        const head = document.createElement("div");
+        head.className = "item-head";
+
+        const name = document.createElement("div");
+        name.className = "item-name";
+        name.textContent = entry.name;
+
+        const info = document.createElement("div");
+        info.className = "item-info";
+        info.textContent = entry.source;
+
+        const tag = document.createElement("span");
+        tag.className = "tag";
+        tag.textContent = typeof entry.item === "object"
+            ? "JSON"
+            : typeof entry.item;
+
+        const json = document.createElement("pre");
+        json.className = "json";
+        json.textContent = JSON.stringify(entry.item, null, 2);
+
+        head.append(name, tag, info);
+        head.onclick = () => item.classList.toggle("open");
+
+        item.append(head, json);
+        list.appendChild(item);
+    });
+}
+
+function refreshAll() {
+    sources.forEach(loadSource);
+}
+
+initialSources.forEach(source => {
+    sources.push(source);
+    loadSource(source);
+});
+
+renderTabs();
+</script>
+</body>
+</html>
