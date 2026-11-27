@@ -38,12 +38,22 @@ th:hover{color:var(--accent)}
 tr:hover td{background:var(--hover)}
 .n{color:var(--num)}.z{color:var(--muted)}
 .sm{padding:4px 8px;font-size:11px}
+.drop #view{outline:2px dashed var(--accent);outline-offset:-2px}
 #found:not(:empty){margin-top:10px;border-top:1px solid var(--line);padding-top:10px}
 .fhead{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
 .fhead strong{margin-right:auto}
 .flist{max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:7px}
 .fitem{display:flex;gap:8px;align-items:flex-start;padding:5px 9px;border-bottom:1px solid var(--line);font:12px ui-monospace,Menlo,Consolas,monospace;overflow-wrap:anywhere;cursor:pointer}
 .fitem:last-child{border-bottom:0}.fitem:hover{background:var(--hover)}.fitem input{padding:0;margin-top:3px}
+details.saved{margin-top:10px}
+details.saved summary{cursor:pointer;color:var(--muted);font-size:12px}
+#saved{margin-top:8px}
+.sitem{display:flex;align-items:center;border-bottom:1px solid var(--line)}
+.sitem:last-child{border-bottom:0}
+.sitem .slink{flex:1;min-width:0;text-align:left;border:0;background:none;border-radius:0;font:12px ui-monospace,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+.sitem .slink:hover{background:var(--hover)}
+.sitem .x{border:0;background:none;color:var(--muted);padding:6px 10px}
+.slist{border:1px solid var(--line);border-radius:7px;max-height:200px;overflow:auto}
 .more{display:block;width:100%;border:0;border-top:1px solid var(--line);border-radius:0;color:var(--muted)}
 </style>
 </head>
@@ -60,6 +70,22 @@ tr:hover td{background:var(--hover)}
       <button id="reloadBtn">Reload all</button>
       <span class="muted">Links must allow cross-origin requests (CORS).</span>
     </div>
+    <details class="saved" id="localBox">
+      <summary>Open files or paste text</summary>
+      <div style="margin-top:8px">
+        <textarea id="pasteText" placeholder="Paste JSON, JSON Lines, or any text that contains JSON" aria-label="Paste text"></textarea>
+        <div class="flex">
+          <button class="primary sm" id="parseBtn">Parse pasted text</button>
+          <button class="sm" id="fileBtn">Open files…</button>
+          <input id="fileIn" type="file" multiple accept=".json,.jsonl,.ndjson,.txt,text/*,application/json" hidden>
+          <span class="muted">Or drop files anywhere on the page. Files are read in your browser and never uploaded.</span>
+        </div>
+      </div>
+    </details>
+    <details class="saved" id="savedBox">
+      <summary>Saved links (<span id="savedCount">0</span>)</summary>
+      <div id="saved"></div>
+    </details>
     <div id="msg" role="alert"></div>
     <div id="found"></div>
   </div>
@@ -116,7 +142,7 @@ function nameFor(url){
   while(st.sources.some(s=>s.name===n))n=base+" ("+i++ +")";
   return n;
 }
-function save(){try{localStorage.setItem(KEY,JSON.stringify(st.sources.map(s=>s.url)));}catch{}}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(st.sources.filter(s=>s.url).map(s=>s.url)));}catch{}}
 
 async function load(s){
   s.ctrl?.abort();
@@ -240,9 +266,14 @@ function render(){
 }
 
 /* ---------- events ---------- */
-$("fetchBtn").onclick=()=>{if(addUrls($("urls").value))$("urls").value="";render();};
+$("fetchBtn").onclick=()=>{
+  const text=$("urls").value;
+  remember(text);
+  if(addUrls(text)){$("urls").value="";store(DRAFT_KEY,"");}
+  render();
+};
 $("urls").addEventListener("keydown",e=>{if(e.key==="Enter"&&(e.ctrlKey||e.metaKey))$("fetchBtn").click();});
-$("reloadBtn").onclick=()=>st.sources.forEach(load);
+$("reloadBtn").onclick=()=>st.sources.filter(s=>s.url).forEach(load);
 
 let qT;
 $("q").oninput=e=>{clearTimeout(qT);qT=setTimeout(()=>{st.q=e.target.value.trim();st.limit=PAGE;render();},150);};
@@ -307,6 +338,7 @@ function extractLinks(text,base){
 async function scan(){
   const idx=[...new Set($("urls").value.split(/[\s,]+/).filter(Boolean))];
   if(!idx.length){$("msg").textContent="Enter the link of a file to scan.";return;}
+  remember(idx.join("\n"));
   $("msg").textContent="";$("scanBtn").disabled=true;$("scanBtn").textContent="Scanning…";
   const errs=[],found=new Map(),empty=[];
   await Promise.all(idx.map(async u=>{
@@ -373,9 +405,120 @@ $("found").addEventListener("change",e=>{
   if(c){st.found[+c.dataset.fi].checked=c.checked;updateGo();}
 });
 
+/* ---------- local files and pasted text (read like plain text) ---------- */
+function uniqueName(base){let n=base,i=2;while(st.sources.some(s=>s.name===n))n=base+" ("+i++ +")";return n;}
+
+// Index of the bracket that closes the one at position i, or -1.
+function balanced(s,i){
+  let depth=0,inStr=false,esc=false;
+  for(let j=i;j<s.length;j++){
+    const c=s[j];
+    if(inStr){if(esc)esc=false;else if(c==="\\")esc=true;else if(c==='"')inStr=false;continue;}
+    if(c==='"')inStr=true;
+    else if(c==="{"||c==="[")depth++;
+    else if(c==="}"||c==="]"){if(--depth===0)return j;}
+  }
+  return -1;
+}
+// Accepts JSON, JSON Lines, or text with JSON inside (logs, code fences, notes).
+function parseLoose(text){
+  text=text.replace(/^\uFEFF/,"").trim();
+  if(!text)throw new Error("The text is empty");
+  try{return parseText(text);}catch{}
+  for(let i=text.search(/[\[{]/),tries=0;i>=0&&tries<20;tries++){
+    const end=balanced(text,i);
+    if(end>i){try{const v=JSON.parse(text.slice(i,end+1));if(findRows(v))return v;}catch{}}
+    const next=text.slice(i+1).search(/[\[{]/);
+    i=next<0?-1:i+1+next;
+  }
+  throw new Error("No valid JSON found in this text");
+}
+function addLocal(name,text){
+  const rows=findRows(parseLoose(text));
+  if(!rows)throw new Error("No list of records found");
+  const s={id:String(uid++),url:null,name:uniqueName(name.replace(/\.(json|jsonl|ndjson|txt)$/i,"")||"pasted"),rows,cols:colsOf(rows),error:null,loading:false,ctrl:null};
+  st.sources.push(s);st.active=s.id;version++;
+  return s;
+}
+async function openFiles(files){
+  const errs=[];
+  for(const f of files){try{addLocal(f.name,await f.text());}catch(e){errs.push(f.name+": "+e.message);}}
+  $("msg").textContent=errs.join("\n");
+  st.sort=null;st.limit=PAGE;render();
+}
+$("fileBtn").onclick=()=>$("fileIn").click();
+$("fileIn").onchange=e=>{openFiles([...e.target.files]);e.target.value="";};
+$("parseBtn").onclick=()=>{
+  try{addLocal("pasted",$("pasteText").value);$("pasteText").value="";$("msg").textContent="";render();}
+  catch(e){$("msg").textContent=e.message;}
+};
+let dragN=0;
+addEventListener("dragenter",e=>{e.preventDefault();dragN++;document.body.classList.add("drop");});
+addEventListener("dragleave",()=>{if(--dragN<=0){dragN=0;document.body.classList.remove("drop");}});
+addEventListener("dragover",e=>e.preventDefault());
+addEventListener("drop",e=>{e.preventDefault();dragN=0;document.body.classList.remove("drop");if(e.dataTransfer?.files.length)openFiles([...e.dataTransfer.files]);});
+
+/* ---------- saved links (stored in this browser only) ---------- */
+const SAVED_KEY="json-table:saved:v1",DRAFT_KEY="json-table:draft:v1",MAXSAVED=100;
+let saved=[],storageOk=true;
+function store(k,v){try{localStorage.setItem(k,v);}catch{storageOk=false;}}
+function readStore(k){try{return localStorage.getItem(k);}catch{storageOk=false;return null;}}
+
+function remember(text){
+  const urls=[...new Set(text.split(/[\s,]+/).filter(Boolean))].filter(u=>{
+    try{return /^https?:$/.test(new URL(u).protocol);}catch{return false;}
+  });
+  if(!urls.length)return;
+  saved=[...urls,...saved.filter(u=>!urls.includes(u))].slice(0,MAXSAVED);
+  store(SAVED_KEY,JSON.stringify(saved));
+  renderSaved();
+}
+function renderSaved(){
+  $("savedCount").textContent=saved.length;
+  const box=$("saved");box.replaceChildren();
+  if(!saved.length)box.append(el("div","muted","Links you fetch or scan are saved here, in this browser only."));
+  else{
+    const bar=el("div","fhead");
+    bar.append(el("span","muted","Select a link to add it to the box."));
+    bar.firstChild.style.marginRight="auto";
+    const all=el("button","sm","Fetch all saved");all.type="button";all.dataset.sa="loadall";
+    const clr=el("button","sm","Clear all");clr.type="button";clr.dataset.sa="clear";
+    bar.append(all,clr);
+    const list=el("div","slist");
+    saved.forEach((u,i)=>{
+      const row=el("div","sitem");
+      const b=el("button","slink",u);b.type="button";b.dataset.use=i;
+      const x=el("button","x","×");x.type="button";x.dataset.del=i;x.setAttribute("aria-label","Remove saved link");
+      row.append(b,x);list.append(row);
+    });
+    box.append(bar,list);
+  }
+  if(!storageOk)box.append(el("div","err","This browser is blocking storage, so links won’t be kept after you close the page."));
+}
+$("saved").addEventListener("click",e=>{
+  const use=e.target.closest("[data-use]"),del=e.target.closest("[data-del]"),act=e.target.closest("[data-sa]")?.dataset.sa;
+  if(use){
+    const url=saved[+use.dataset.use],ta=$("urls");
+    if(!ta.value.split(/[\s,]+/).includes(url)){ta.value=(ta.value.trim()?ta.value.trim()+"\n":"")+url;store(DRAFT_KEY,ta.value);}
+    ta.focus();
+  }else if(del){
+    saved.splice(+del.dataset.del,1);store(SAVED_KEY,JSON.stringify(saved));renderSaved();
+  }else if(act==="clear"){
+    if(confirm("Remove all saved links?")){saved=[];store(SAVED_KEY,"[]");renderSaved();}
+  }else if(act==="loadall"){
+    addUrls(saved.join("\n"));render();
+  }
+});
+$("urls").addEventListener("input",()=>store(DRAFT_KEY,$("urls").value));
+
 /* ---------- init ---------- */
 (function(){
-  try{const saved=JSON.parse(localStorage.getItem(KEY)||"[]");if(Array.isArray(saved)&&saved.length)addUrls(saved.join("\n"));}catch{}
+  try{localStorage.setItem("json-table:test","1");localStorage.removeItem("json-table:test");}catch{storageOk=false;}
+  try{const s=JSON.parse(readStore(SAVED_KEY)||"[]");if(Array.isArray(s))saved=s.filter(u=>typeof u==="string");}catch{}
+  $("urls").value=readStore(DRAFT_KEY)||"";
+  $("savedBox").open=saved.length>0;
+  renderSaved();
+  try{const prev=JSON.parse(readStore(KEY)||"[]");if(Array.isArray(prev)&&prev.length)addUrls(prev.join("\n"));}catch{}
   render();
 })();
 </script>
