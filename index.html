@@ -37,6 +37,13 @@ th{position:sticky;top:0;background:var(--panel);cursor:pointer;user-select:none
 th:hover{color:var(--accent)}
 tr:hover td{background:var(--hover)}
 .n{color:var(--num)}.z{color:var(--muted)}
+.sm{padding:4px 8px;font-size:11px}
+#found:not(:empty){margin-top:10px;border-top:1px solid var(--line);padding-top:10px}
+.fhead{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.fhead strong{margin-right:auto}
+.flist{max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:7px}
+.fitem{display:flex;gap:8px;align-items:flex-start;padding:5px 9px;border-bottom:1px solid var(--line);font:12px ui-monospace,Menlo,Consolas,monospace;overflow-wrap:anywhere;cursor:pointer}
+.fitem:last-child{border-bottom:0}.fitem:hover{background:var(--hover)}.fitem input{padding:0;margin-top:3px}
 .more{display:block;width:100%;border:0;border-top:1px solid var(--line);border-radius:0;color:var(--muted)}
 </style>
 </head>
@@ -49,10 +56,12 @@ tr:hover td{background:var(--hover)}
     <textarea id="urls" placeholder="One link per line" aria-label="JSON links"></textarea>
     <div class="flex">
       <button class="primary" id="fetchBtn">Fetch links</button>
+      <button id="scanBtn" title="Open each link as an index and list the .json links inside it">Find .json links in file</button>
       <button id="reloadBtn">Reload all</button>
       <span class="muted">Links must allow cross-origin requests (CORS).</span>
     </div>
     <div id="msg" role="alert"></div>
+    <div id="found"></div>
   </div>
 
   <input class="search" id="q" type="search" placeholder="Search rows…" aria-label="Search rows">
@@ -258,6 +267,111 @@ $("view").addEventListener("click",e=>{
   }
 });
 $("view").addEventListener("keydown",e=>{if((e.key==="Enter"||e.key===" ")&&e.target.matches("th[data-col]")){e.preventDefault();e.target.click();}});
+
+/* ---------- index scanning ---------- */
+const END="[\\s\"'<>\\\\)\\]},]";
+const ABS_RE=new RegExp("https?:\\/\\/[^\\s\"'<>\\\\)\\]},]+?\\.(?:json|jsonl|ndjson)(?:\\?[^\\s\"'<>\\\\)\\]},]*)?(?="+END+"|$)","gi");
+const REL_RE=/\.(?:json|jsonl|ndjson)(?:\?\S*)?$/i;
+const ATTR_RE=/(?:href|src)=["']([^"']+\.(?:json|jsonl|ndjson)(?:\?[^"']*)?)["']/gi;
+const MAXFOUND=500;
+st.found=[];
+
+async function fetchText(url){
+  const ctrl=new AbortController(),t=setTimeout(()=>ctrl.abort(),TIMEOUT);
+  try{
+    const r=await fetch(url,{signal:ctrl.signal});
+    if(!r.ok)throw new Error("HTTP "+r.status);
+    return await r.text();
+  }catch(e){
+    throw ctrl.signal.aborted?new Error("Timed out"):e instanceof TypeError?new Error("Network error or blocked by CORS"):e;
+  }finally{clearTimeout(t);}
+}
+
+// Finds .json links in any text: JSON values, HTML attributes, Markdown or plain text.
+function extractLinks(text,base){
+  const out=new Set();
+  const add=s=>{try{const u=new URL(s,base);if(/^https?:$/.test(u.protocol))out.add(u.href);}catch{}};
+  (text.match(ABS_RE)||[]).forEach(add);
+  let data;
+  try{data=JSON.parse(text.replace(/^\uFEFF/,""));}catch{}
+  if(data!==undefined){
+    (function walk(v){
+      if(typeof v==="string"){if(REL_RE.test(v)&&!/\s/.test(v))add(v);}
+      else if(isC(v))for(const k in v)walk(v[k]);
+    })(data);
+  }else for(const m of text.matchAll(ATTR_RE))add(m[1]);
+  try{out.delete(new URL(base).href);}catch{}
+  return [...out].slice(0,MAXFOUND);
+}
+
+async function scan(){
+  const idx=[...new Set($("urls").value.split(/[\s,]+/).filter(Boolean))];
+  if(!idx.length){$("msg").textContent="Enter the link of a file to scan.";return;}
+  $("msg").textContent="";$("scanBtn").disabled=true;$("scanBtn").textContent="Scanning…";
+  const errs=[],found=new Map(),empty=[];
+  await Promise.all(idx.map(async u=>{
+    try{
+      new URL(u);
+      const links=extractLinks(await fetchText(u),u);
+      if(!links.length)empty.push(u);
+      links.forEach(l=>{if(!found.has(l))found.set(l,u);});
+    }catch(e){errs.push(u+": "+(e instanceof TypeError?"Not a valid link":e.message));}
+  }));
+  st.found=[...found.keys()].map(url=>{
+    const added=st.sources.some(s=>s.url===url);
+    return{url,added,checked:!added};
+  });
+  const msgs=[];
+  if(errs.length)msgs.push("Couldn’t scan:\n"+errs.join("\n"));
+  if(empty.length)msgs.push("No .json links found in:\n"+empty.join("\n"));
+  $("msg").textContent=msgs.join("\n\n");
+  $("scanBtn").disabled=false;$("scanBtn").textContent="Find .json links in file";
+  renderFound();
+}
+
+function renderFound(){
+  const box=$("found");box.replaceChildren();
+  const list=st.found;
+  if(!list.length)return;
+  const head=el("div","fhead");
+  head.append(el("strong",null,list.length+" .json link"+(list.length===1?"":"s")+" found"));
+  for(const [a,l] of [["all","Select all"],["none","None"]]){const b=el("button","sm",l);b.type="button";b.dataset.fa=a;head.append(b);}
+  const go=el("button","primary sm");go.type="button";go.dataset.fa="load";head.append(go);
+  const no=el("button","sm","Dismiss");no.type="button";no.dataset.fa="dismiss";head.append(no);
+  const ul=el("div","flist");
+  list.forEach((f,i)=>{
+    const lb=el("label","fitem"),c=el("input");
+    c.type="checkbox";c.checked=f.checked;c.disabled=f.added;c.dataset.fi=i;
+    lb.append(c,el("span",null,f.url+(f.added?" (already added)":"")));
+    ul.append(lb);
+  });
+  box.append(head,ul);
+  updateGo();
+}
+function updateGo(){
+  const go=document.querySelector("[data-fa=load]");if(!go)return;
+  const n=st.found.filter(f=>f.checked).length;
+  go.textContent="Load selected ("+n+")";go.disabled=!n;
+}
+
+$("scanBtn").onclick=scan;
+$("found").addEventListener("click",e=>{
+  const b=e.target.closest("[data-fa]");if(!b)return;
+  const a=b.dataset.fa;
+  if(a==="all")st.found.forEach(f=>{f.checked=!f.added;});
+  if(a==="none")st.found.forEach(f=>{f.checked=false;});
+  if(a==="dismiss")st.found=[];
+  if(a==="load"){
+    const urls=st.found.filter(f=>f.checked).map(f=>f.url);
+    st.found=[];$("urls").value="";
+    addUrls(urls.join("\n"));render();
+  }
+  renderFound();
+});
+$("found").addEventListener("change",e=>{
+  const c=e.target.closest("[data-fi]");
+  if(c){st.found[+c.dataset.fi].checked=c.checked;updateGo();}
+});
 
 /* ---------- init ---------- */
 (function(){
